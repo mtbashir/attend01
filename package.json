@@ -1,0 +1,10 @@
+{
+  "name": "student-attendance",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Offline-first class sign-in web app for Google Apps Script",
+  "scripts": {
+    "test": "node tests/test_server.js",
+    "load": "node tests/load_test.js 60"
+  }
+}

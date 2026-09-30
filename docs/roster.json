@@ -1,0 +1,348 @@
+﻿{
+    "version":  "IwMPWFxfi5xu",
+    "students":  [
+                     [
+                         "1",
+                         "Abdullah Umar",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "2",
+                         "Ali Dhillon",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "3",
+                         "Ali Hassan",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "4",
+                         "Asma Bashir",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "5",
+                         "Asra Mahboob",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "6",
+                         "Ayaan Faisal",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "7",
+                         "Faisal Younas",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "8",
+                         "Faryal Tariq",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "9",
+                         "Fatima Khan",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "10",
+                         "Hafiz Muhammad Abdullah Razzaq",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "11",
+                         "Hammad Afzal",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "12",
+                         "Ijaz Hussain Ashraf",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "13",
+                         "Laiba Hammad",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "14",
+                         "Mahnoor Elahi",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "15",
+                         "Maryam Saeed",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "16",
+                         "Mehwish Bandesha",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "17",
+                         "Moeed Ather",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "18",
+                         "Muhammad Raza Khan",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "19",
+                         "Muhammad Saad Qadeer",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "20",
+                         "Muhammad Shahrukh Malik",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "21",
+                         "Nabeeha Waseem",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "22",
+                         "Noor Fatima",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "23",
+                         "Ruttaba Hammad",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "24",
+                         "Saad Shakeel",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "25",
+                         "Shiza Imran",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "26",
+                         "Syed Fahad Imam",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "27",
+                         "Syed M Zeeshan Haider Rizvi",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "28",
+                         "Syeda Raima Rashid",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "29",
+                         "Talha Butt",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "30",
+                         "Usman Ahmad",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "31",
+                         "Uswa Khalid",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "32",
+                         "Wajahat Ali Shafiq",
+                         "ECOM-SEP-26"
+                     ],
+                     [
+                         "33",
+                         "Zain Aslam",
+                         "ECOM-SEP-26"
+                     ]
+                 ],
+    "timetable":  [
+                      {
+                          "sessionNo":  "1",
+                          "day":  "Tuesday",
+                          "date":  "2026-09-22",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "2",
+                          "day":  "Thursday",
+                          "date":  "2026-09-24",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "3",
+                          "day":  "Tuesday",
+                          "date":  "2026-09-29",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "4",
+                          "day":  "Thursday",
+                          "date":  "2026-10-01",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "5",
+                          "day":  "Tuesday",
+                          "date":  "2026-10-06",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "6",
+                          "day":  "Thursday",
+                          "date":  "2026-10-08",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "7",
+                          "day":  "Tuesday",
+                          "date":  "2026-10-13",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "8",
+                          "day":  "Thursday",
+                          "date":  "2026-10-15",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "9",
+                          "day":  "Tuesday",
+                          "date":  "2026-10-20",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "10",
+                          "day":  "Thursday",
+                          "date":  "2026-10-22",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "11",
+                          "day":  "Tuesday",
+                          "date":  "2026-10-27",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "12",
+                          "day":  "Thursday",
+                          "date":  "2026-10-29",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      },
+                      {
+                          "sessionNo":  "12",
+                          "day":  "wednesday",
+                          "date":  "2026-09-30",
+                          "section":  "ECOM-SEP-26",
+                          "startTime":  "18:30",
+                          "endTime":  "20:30",
+                          "rules":  [
+                                        5,
+                                        10,
+                                        20
+                                    ]
+                      }
+                  ],
+    "totalStudents":  33,
+    "defaultRules":  [
+                         5,
+                         7,
+                         15
+                     ],
+    "serverTs":  1790786049964
+}

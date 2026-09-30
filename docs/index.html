@@ -1,0 +1,1497 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1b4d86">
+  <style>
+    :root {
+      --ink: #16202c;
+      --muted: #5b6574;
+      --bg: #e9edf1;
+      --paper: #ffffff;
+      --line: #d3d9e0;
+      --field: #b7c0ca;
+      --blue: #1b4d86;
+      --ok: #1b7443;   --ok-soft: #e4f2e9;
+      --fine: #875800; --fine-soft: #fbf0d6;
+      --late: #ad430c; --late-soft: #fce8dc;
+      --bad: #b0271f;  --bad-soft: #fae6e4;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body {
+      margin: 0 auto; max-width: 480px; padding: 10px 12px 28px;
+      background: var(--bg); color: var(--ink);
+      font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial, sans-serif;
+      -webkit-text-size-adjust: 100%;
+    }
+    h1, h2 { margin: 0 0 12px; line-height: 1.2; }
+    h1 { font-size: 20px; }
+    h2 { font-size: 17px; }
+
+    /* Sync bar: the one place that says where the data is */
+    .sync {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--paper); border: 1px solid var(--line); border-left: 6px solid var(--muted);
+      border-radius: 8px; padding: 10px 10px 10px 12px; margin-bottom: 10px;
+    }
+    .sync[data-state="ok"]      { border-left-color: var(--ok); }
+    .sync[data-state="busy"]    { border-left-color: var(--blue); }
+    .sync[data-state="offline"],
+    .sync[data-state="retry"]   { border-left-color: var(--fine); background: var(--fine-soft); }
+    .offline-line { text-align: center; margin: 4px 0 18px; }
+    .sync[data-state="stuck"]   { border-left-color: var(--bad); background: var(--bad-soft); }
+    .sync-text { flex: 1; min-width: 0; }
+    .sync-text strong { display: block; font-size: 14px; }
+    .sync-text span { display: block; font-size: 12.5px; color: var(--muted); }
+    .sync-text .clock { color: var(--bad); }
+    .sync-btn {
+      flex: none; font: inherit; font-size: 13px; font-weight: 600; color: var(--blue);
+      background: var(--paper); border: 1px solid var(--blue); border-radius: 6px; padding: 7px 10px; cursor: pointer;
+    }
+
+    .card { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 10px; }
+
+    label { display: block; font-weight: 600; font-size: 13px; margin: 0 0 4px; }
+    input[type="text"] {
+      width: 100%; font: inherit; color: inherit; background: #fff;
+      padding: 10px 11px; border: 1px solid var(--field); border-radius: 6px; margin-bottom: 12px;
+    }
+    input[type="text"]:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(27, 77, 134, .18); }
+    input[type="file"] { width: 100%; font-size: 13px; margin-bottom: 10px; }
+    .hint { font-size: 12.5px; color: var(--muted); margin: -6px 0 12px; }
+    .hint.warn { color: var(--fine); }
+
+    .btn {
+      display: block; width: 100%; font: inherit; font-weight: 600; cursor: pointer;
+      padding: 12px; border-radius: 6px; border: 1px solid transparent;
+    }
+    .btn[disabled] { opacity: .6; cursor: default; }
+    .btn:focus-visible, .sync-btn:focus-visible { outline: 3px solid rgba(27, 77, 134, .4); outline-offset: 2px; }
+    .btn-primary { background: var(--blue); color: #fff; }
+    .btn-secondary { background: #fff; color: var(--blue); border-color: var(--blue); }
+    .btn-danger { background: #fff; color: var(--bad); border-color: var(--bad); margin-top: 14px; }
+
+    .gps { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; }
+    .gps.ok { color: var(--ok); }
+    .gps.bad { color: var(--bad); }
+
+    /* Active session */
+    .session-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .session-head h2 { margin: 0; }
+    .live { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); animation: live 2s infinite; }
+    @keyframes live {
+      0%   { box-shadow: 0 0 0 0 rgba(27, 116, 67, .45); }
+      70%  { box-shadow: 0 0 0 8px rgba(27, 116, 67, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(27, 116, 67, 0); }
+    }
+    .who { font-size: 18px; font-weight: 600; margin: 0; }
+    .sub { font-size: 13px; color: var(--muted); margin: 2px 0 10px; }
+    .verdict { margin: 0 0 6px; font-size: 14px; }
+    .ping { font-size: 12.5px; color: var(--muted); margin: 0; }
+    .ping.bad { color: var(--bad); }
+    .photo { border: 1px dashed #9fb0c3; border-radius: 8px; padding: 12px; margin-top: 14px; }
+
+    .check { display: block; width: 48px; height: 48px; margin: 0 auto 8px; fill: none; stroke: var(--ok); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .check path { stroke-dasharray: 40; stroke-dashoffset: 40; animation: tick .45s .1s ease-out forwards; }
+    @keyframes tick { to { stroke-dashoffset: 0; } }
+
+    .status { font-size: 14px; font-weight: 600; margin: 0 0 10px; padding: 0 2px; }
+    .status:empty { display: none; }
+    .status.ok { color: var(--ok); }
+    .status.bad { color: var(--bad); }
+
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .p-ok   { background: var(--ok-soft);   color: var(--ok); }
+    .p-fine { background: var(--fine-soft); color: var(--fine); }
+    .p-late { background: var(--late-soft); color: var(--late); }
+    .p-bad  { background: var(--bad-soft);  color: var(--bad); }
+
+    /* Today's counters */
+    .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 10px; }
+    .tile { background: var(--paper); border: 1px solid var(--line); border-top: 3px solid var(--muted); border-radius: 8px; padding: 8px 2px 7px; text-align: center; }
+    .tile b { display: block; font-size: 20px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+    .tile span { display: block; font-size: 11.5px; color: var(--muted); }
+    .t-ok   { border-top-color: var(--ok); }   .t-ok b   { color: var(--ok); }
+    .t-fine { border-top-color: var(--fine); } .t-fine b { color: var(--fine); }
+    .t-late { border-top-color: var(--late); } .t-late b { color: var(--late); }
+    .t-bad  { border-top-color: var(--bad); }  .t-bad b  { color: var(--bad); }
+
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    th, td { padding: 7px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; }
+    th { font-weight: 600; color: var(--muted); background: #f4f6f8; }
+    td.empty { text-align: center; color: var(--muted); white-space: normal; padding: 14px 6px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      .check path { stroke-dashoffset: 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <section id="syncBar" class="sync" data-state="busy" aria-live="polite">
+    <div class="sync-text">
+      <strong id="syncTitle">Startingâ€¦</strong>
+      <span id="syncDetail"></span>
+    </div>
+    <button type="button" id="syncBtn" class="sync-btn" hidden>Upload now</button>
+  </section>
+
+  <!-- Sign-in -->
+  <section class="card" id="loginSection" hidden>
+    <h1>Class sign-in</h1>
+    <form id="attendanceForm" novalidate autocomplete="off">
+      <label for="rollNoInput">Roll no</label>
+      <input type="text" id="rollNoInput" list="rollNoList" placeholder="Type or pick your roll no" required>
+      <datalist id="rollNoList"></datalist>
+      <p class="hint" id="rosterHint"></p>
+
+      <label for="studentNameInput">Name</label>
+      <input type="text" id="studentNameInput" list="namesList" placeholder="Full name" required>
+      <datalist id="namesList"></datalist>
+
+      <label for="sectionInput">Section</label>
+      <input type="text" id="sectionInput" list="sectionsList" placeholder="Section" required>
+      <datalist id="sectionsList"></datalist>
+
+      <button type="submit" class="btn btn-primary" id="signInBtn">Sign in with location</button>
+      <p class="gps" id="gpsLine">Your location is checked when you sign in.</p>
+    </form>
+  </section>
+
+  <!-- Active session -->
+  <section class="card" id="sessionSection" hidden>
+    <svg id="checkmark" class="check" viewBox="0 0 52 52" aria-hidden="true" hidden>
+      <circle cx="26" cy="26" r="23"></circle><path d="M15 27l7 7 15-15"></path>
+    </svg>
+    <div class="session-head"><span class="live" aria-hidden="true"></span><h2>In class</h2></div>
+    <p class="who" id="activeName"></p>
+    <p class="sub" id="activeMeta"></p>
+    <p class="verdict" id="activeVerdict"></p>
+    <p class="ping" id="pingLine">Keep this page open. Your location is checked every 2 minutes.</p>
+
+    <div class="photo">
+      <label for="sessionPhotoInput">Verification photo</label>
+      <input type="file" id="sessionPhotoInput" accept="image/*" capture="environment">
+      <button type="button" class="btn btn-secondary" id="photoBtn">Save photo</button>
+    </div>
+
+    <button type="button" class="btn btn-danger" id="signOutBtn">Sign out of class</button>
+  </section>
+
+  <p id="status" class="status" role="status"></p>
+
+  <!-- Today, whole class -->
+  <section class="tiles" aria-label="Today">
+    <div class="tile"><b id="totalStudentsCount">0</b><span>Roster</span></div>
+    <div class="tile t-ok"><b id="presentStudentsCount">0</b><span>Present</span></div>
+    <div class="tile t-fine"><b id="finedStudentsCount">0</b><span>Fined</span></div>
+    <div class="tile t-late"><b id="lateStudentsCount">0</b><span>Late</span></div>
+    <div class="tile t-bad"><b id="absentStudentsCount">0</b><span>Absent</span></div>
+  </section>
+
+  <section class="card">
+    <h2>Today's sign-ins</h2>
+    <p class="hint" id="dayScope"></p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>In</th><th>Roll no</th><th>Name</th><th>Sec</th><th>Status</th></tr>
+        </thead>
+        <tbody id="studentTableBody">
+          <tr><td colspan="5" class="empty">No sign-ins yet today.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <p class="hint offline-line" id="offlineLine"></p>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ================= Settings (keep rules in step with Code.gs) ================= */
+  // Where this page sends records when it is hosted outside Apps Script (GitHub Pages, your own site).
+  // Normally it is read from config.json next to this file, so changing the link is a one-line edit
+  // that phones pick up on their next visit. This setting is only a fallback if config.json is missing.
+  var API_URL = '';
+  var CONFIG_URL = 'config.json';
+  var ROSTER_FILE = 'roster.json';   // a copy of the class list kept beside this page, for a phone's first run
+  var CONFIG_WAIT_MS = 6000;      // how long a first-time visitor waits for config.json
+  var CLASS_LAT = 31.47085570910651;
+  var CLASS_LNG = 74.40947299995877;
+  var MAX_RADIUS_METERS = 100000;
+  var GPS_TOLERANCE_MAX = 30;            // metres of reported GPS error forgiven at the edge of the area
+  var GPS_MAX_ACCURACY = 150;            // a fix vaguer than Â±150 m is not accepted for sign-in
+  var PING_INTERVAL_MS = 2 * 60 * 1000;
+  var PING_UPLOAD_EVERY = 5;             // upload 1 in 5 in-range checks (every 10 min). Set 1 to upload every check
+  var OUT_OF_RANGE_LOGOUT_MS = 10 * 60 * 1000;
+  var BATCH_SIZE = 40;                   // records per upload call
+  var CALL_TIMEOUT_MS = 60 * 1000;
+  var PHOTO_MAX_EDGE = 800;              // px on the longest side after compression
+  var PHOTO_QUALITY = 0.6;
+  var MAX_SERVER_ERRORS = 5;
+  var UPLOAD_SPREAD_MS = 30000;      // a whole class signs in at once: spread the uploads out
+  var ROSTER_SPREAD_MS = 60000;      // same for the class-list check when a copy is already saved
+  var SUMMARY_REFRESH_MS = 120000;   // how often the whole-class figures are fetched while the page is open             // after this many rejections a record waits for a manual Retry
+  var ROSTER_RECHECK_MS = 30 * 60 * 1000;
+  var SESSION_MAX_MS = 12 * 60 * 60 * 1000;
+  var DEFAULT_RULES = [5, 7, 15];
+  var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  var K = {
+    roster: 'att_roster_v2', oldRoster: 'app_master_roster', session: 'active_session',
+    device: 'app_device_id', skew: 'att_clock_skew', lastUpload: 'att_last_upload', rosterChecked: 'att_roster_checked',
+    apiUrl: 'att_api_url', summary: 'att_day_summary', lastSection: 'att_last_section'
+  };
+
+  /* ================= Small helpers ================= */
+  function $(id) { return document.getElementById(id); }
+  function val(id) { return $(id).value.trim(); }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function norm(s) { return String(s || '').trim().toLowerCase(); }
+  function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+  function localDate(ts) { var d = new Date(ts); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function localHM(ts) { var d = new Date(ts); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function minutesOf(ts) { var d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); }
+  function clockMin(s) { var m = /^(\d{1,2}):(\d{2})/.exec(s || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; }
+  function when(ts) { return localDate(ts) === localDate(Date.now()) ? localHM(ts) : localDate(ts) + ' ' + localHM(ts); }
+  function round6(n) { return typeof n === 'number' ? Math.round(n * 1e6) / 1e6 : ''; }
+  function isOffline() { return navigator.onLine === false; }
+  function inAppsScript() { return !!(typeof google !== 'undefined' && google.script && google.script.run); }
+  var liveApi = '';        // filled from config.json, then remembered so the phone works offline
+  var configPending = false;
+  function apiUrl() { return String(liveApi || API_URL || '').trim(); }
+  function apiReady() { return /^https:\/\/\S+\/exec$/.test(apiUrl()); }
+  function hasServer() { return inAppsScript() || apiReady(); }
+  function errText(e) { return (e && e.message) ? e.message : String(e || 'Unknown error'); }
+
+  function lsGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }
+  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+
+  function deviceId() {
+    var id = lsGet(K.device);
+    if (!id) {
+      try { id = localStorage.getItem(K.device); } catch (e) {}   // stored as a plain string by the old version
+    }
+    if (!id || typeof id !== 'string') {
+      id = 'DEV-' + Math.random().toString(36).slice(2, 11) + '-' + Date.now();
+      try { localStorage.setItem(K.device, id); } catch (e) {}
+    }
+    return id;
+  }
+  function newEventId() {
+    return deviceId().slice(4, 13) + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  }
+
+  function say(msg, tone) {
+    var el = $('status');
+    el.textContent = msg || '';
+    el.className = 'status' + (tone ? ' ' + tone : '');
+  }
+
+  /* ================= Local storage (IndexedDB, localStorage as fallback) ================= */
+  var Store = (function () {
+    var db = null, fallback = false;
+    var FB = 'att_fb_';
+    function keyOf(name) { return name === 'daylog' ? 'key' : 'id'; }
+    function fbGet(name) { return lsGet(FB + name) || []; }
+    function fbSet(name, arr) {
+      try { localStorage.setItem(FB + name, JSON.stringify(arr)); }
+      catch (e) { throw new Error('Phone storage is full'); }
+    }
+
+    function open() {
+      return new Promise(function (resolve) {
+        var done = false;
+        function useFallback() { if (!done) { done = true; fallback = true; resolve(); } }
+        if (!window.indexedDB) return useFallback();
+        var req;
+        try { req = indexedDB.open('OfflineAttendanceDB', 7); } catch (e) { return useFallback(); }
+        req.onupgradeneeded = function (e) {
+          var d = e.target.result;
+          if (!d.objectStoreNames.contains('queue')) d.createObjectStore('queue', { keyPath: 'id', autoIncrement: true });
+          if (d.objectStoreNames.contains('logs')) d.deleteObjectStore('logs');       // old display-only store
+          if (!d.objectStoreNames.contains('daylog')) d.createObjectStore('daylog', { keyPath: 'key' });
+        };
+        req.onsuccess = function (e) {
+          var d = e.target.result;
+          if (done) { d.close(); return; }          // already running on the fallback this time
+          done = true; db = d;
+          db.onversionchange = function () { db.close(); };
+          resolve();
+        };
+        req.onerror = useFallback;
+        req.onblocked = function () { setTimeout(useFallback, 5000); };  // an old copy of the page is open elsewhere
+      });
+    }
+
+    function tx(name, mode, fn) {
+      return new Promise(function (resolve, reject) {
+        var t = db.transaction(name, mode);
+        var r = fn(t.objectStore(name));
+        t.oncomplete = function () { resolve(r ? r.result : undefined); };
+        t.onerror = t.onabort = function () { reject(t.error || new Error('Storage error')); };
+      });
+    }
+
+    return {
+      open: open,
+      add: function (name, obj) {
+        if (fallback) {
+          try {
+            var a = fbGet(name);
+            obj.id = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+            a.push(obj); fbSet(name, a);
+            return Promise.resolve(obj.id);
+          } catch (e) { return Promise.reject(e); }
+        }
+        return tx(name, 'readwrite', function (s) { return s.add(obj); });
+      },
+      put: function (name, obj) {
+        if (fallback) {
+          try {
+            var k = keyOf(name);
+            var a = fbGet(name).filter(function (x) { return x[k] !== obj[k]; });
+            a.push(obj); fbSet(name, a);
+            return Promise.resolve();
+          } catch (e) { return Promise.reject(e); }
+        }
+        return tx(name, 'readwrite', function (s) { return s.put(obj); });
+      },
+      get: function (name, key) {
+        if (fallback) {
+          var k = keyOf(name);
+          return Promise.resolve(fbGet(name).filter(function (x) { return x[k] === key; })[0]);
+        }
+        return tx(name, 'readonly', function (s) { return s.get(key); });
+      },
+      getAll: function (name) {
+        if (fallback) return Promise.resolve(fbGet(name));
+        return tx(name, 'readonly', function (s) { return s.getAll(); });
+      },
+      remove: function (name, keys) {
+        if (!keys.length) return Promise.resolve();
+        if (fallback) {
+          var k = keyOf(name);
+          try { fbSet(name, fbGet(name).filter(function (x) { return keys.indexOf(x[k]) < 0; })); }
+          catch (e) { return Promise.reject(e); }
+          return Promise.resolve();
+        }
+        return tx(name, 'readwrite', function (s) { keys.forEach(function (key) { s.delete(key); }); });
+      },
+      /** Records saved while IndexedDB was unavailable are moved into it. */
+      drainFallback: function () {
+        if (fallback) return Promise.resolve();
+        var q = fbGet('queue'), d = fbGet('daylog');
+        if (!q.length && !d.length) return Promise.resolve();
+        return tx('queue', 'readwrite', function (s) { q.forEach(function (i) { delete i.id; s.add(i); }); })
+          .then(function () { return tx('daylog', 'readwrite', function (s) { d.forEach(function (i) { s.put(i); }); }); })
+          .then(function () { lsDel(FB + 'queue'); lsDel(FB + 'daylog'); });
+      }
+    };
+  })();
+
+  /* ================= Roster (downloaded once, reused offline) ================= */
+  var roster = null, byRoll = {}, byName = {};
+
+  function loadCachedRoster() {
+    var r = lsGet(K.roster);
+    if (r && r.students) return r;
+    var old = lsGet(K.oldRoster);   // cache written by the previous version of this page
+    if (old) {
+      return { version: 'legacy', students: [], legacy: old, timetable: old.timetable || [], totalStudents: old.totalStudents || 0 };
+    }
+    return null;
+  }
+
+  function rosterTotal() {
+    if (!roster) return 0;
+    return roster.students.length || roster.totalStudents || 0;
+  }
+
+  function fillList(id, items) {
+    var list = $(id), frag = document.createDocumentFragment();
+    items.forEach(function (v) { var o = document.createElement('option'); o.value = v; frag.appendChild(o); });
+    list.innerHTML = '';
+    list.appendChild(frag);
+  }
+
+  function applyRoster() {
+    byRoll = {}; byName = {};
+    var rolls = [], names = {}, sections = {};
+    if (roster) {
+      roster.students.forEach(function (s) {
+        byRoll[norm(s[0])] = s;
+        rolls.push(s[0]);
+        names[s[1]] = 1;
+        (byName[norm(s[1])] = byName[norm(s[1])] || []).push(s);
+        if (s[2]) sections[s[2]] = 1;
+      });
+      if (roster.legacy) {
+        rolls = roster.legacy.rollNos || [];
+        (roster.legacy.names || []).forEach(function (n) { names[n] = 1; });
+        (roster.legacy.sections || []).forEach(function (x) { sections[x] = 1; });
+      }
+      (roster.timetable || []).forEach(function (t) { if (t.section) sections[t.section] = 1; });
+    }
+    fillList('rollNoList', rolls);
+    fillList('namesList', Object.keys(names));
+    fillList('sectionsList', Object.keys(sections).sort());
+    $('totalStudentsCount').textContent = rosterTotal();
+    renderRosterHint();
+    renderDay();
+  }
+
+  function renderRosterHint(extra, warn) {
+    var el = $('rosterHint');
+    if (extra) { el.textContent = extra; el.className = 'hint' + (warn ? ' warn' : ''); return; }
+    el.className = 'hint';
+    if (!roster) {
+      el.textContent = 'No class list on this phone yet. It downloads the next time this page opens with signal.';
+    } else {
+      el.textContent = 'Class list saved on this phone: ' + plural(rosterTotal(), 'student') +
+        (roster.savedAt ? ', updated ' + when(roster.savedAt) : '') + '.';
+    }
+  }
+
+  function refreshRoster(force) {
+    if (!hasServer() || isOffline()) return;
+    var last = Number(lsGet(K.rosterChecked)) || 0;
+    if (!force && roster && Date.now() - last < ROSTER_RECHECK_MS) return;
+    var t0 = Date.now();
+    callServer('getRosterData', [roster && roster.version !== 'legacy' ? roster.version : 'none'], CALL_TIMEOUT_MS)
+      .then(function (res) {
+        noteServerTime(t0, Date.now(), res && res.serverTs);
+        lsSet(K.rosterChecked, Date.now());
+        if (!res || res.notModified || !res.students) return;
+        roster = {
+          version: res.version, students: res.students, timetable: res.timetable || [],
+          defaultRules: res.defaultRules || DEFAULT_RULES, savedAt: Date.now()
+        };
+        if (lsSet(K.roster, roster)) lsDel(K.oldRoster);
+        applyRoster();
+      }, function (e) {
+        // keep using the saved copy; with no copy at all, say why
+        if (!roster && !isOffline()) renderRosterHint('Could not download the class list: ' + errText(e) + '. It retries when the page is reopened.', true);
+      });
+  }
+
+  /* ================= Timetable rules (same as evaluateStatus_ in Code.gs) ================= */
+  function sessionsToday(section, ts) {
+    if (!roster || !roster.timetable) return [];
+    var day = localDate(ts), want = norm(section);
+    return roster.timetable.filter(function (t) { return t.date === day && norm(t.section) === want; });
+  }
+
+  function isScheduledToday(section, ts) {
+    if (!roster || !roster.timetable || !roster.timetable.length) return true;   // no timetable loaded: allow
+    return sessionsToday(section, ts).length > 0;
+  }
+
+  function evaluateLocal(section, ts) {
+    var r = { onTime: false, fined: false, late: false, absent: false, diff: null, sessionNo: '' };
+    var now = minutesOf(ts), best = null, bestGap = Infinity;
+    sessionsToday(section, ts).forEach(function (t) {
+      var start = clockMin(t.startTime);
+      if (start === null) return;
+      var gap = Math.abs(now - start);
+      if (gap < bestGap) { best = t; bestGap = gap; }
+    });
+    if (!best) { r.onTime = true; return r; }
+    var rules = best.rules || (roster && roster.defaultRules) || DEFAULT_RULES;
+    var diff = now - clockMin(best.startTime);
+    r.diff = diff; r.sessionNo = best.sessionNo;
+    if (diff <= rules[0]) r.onTime = true;
+    else if (diff <= rules[1]) r.fined = true;
+    else if (diff <= rules[2]) { r.late = true; r.fined = true; }
+    else r.absent = true;
+    return r;
+  }
+
+  function verdictOf(v) {
+    var d = v.diff === null || v.diff === undefined ? '' :
+      v.diff <= 0 ? ' (' + (-v.diff) + ' min before start)' : ' (' + v.diff + ' min after start)';
+    if (v.absent) return { cls: 'p-bad', label: 'Absent', text: 'Marked absent' + d };
+    if (v.late) return { cls: 'p-late', label: 'Late', text: 'Late and fined' + d };
+    if (v.fined) return { cls: 'p-fine', label: 'Fined', text: 'Fined' + d };
+    return { cls: 'p-ok', label: 'On time', text: 'On time' + d };
+  }
+
+  /* ================= Clock check ================= */
+  function noteServerTime(t0, t1, serverTs) {
+    if (!serverTs || t1 - t0 > 30000) return;               // slow replies give a poor estimate
+    lsSet(K.skew, { skew: Math.round((t0 + t1) / 2 - serverTs), at: t1 });
+  }
+  function currentSkew() {
+    var s = lsGet(K.skew);
+    return s && typeof s.skew === 'number' ? s.skew : null;
+  }
+
+  /* ================= GPS ================= */
+  var gps = { watchId: null, best: null, error: null };
+
+  function toFix(p) {
+    // Receive time, not p.timestamp: some Android devices report position times that don't match the phone clock
+    return { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 9999), ts: Date.now() };
+  }
+
+  function distanceTo(fix) {
+    var R = 6371000, toRad = Math.PI / 180;
+    var dLat = (fix.lat - CLASS_LAT) * toRad, dLon = (fix.lng - CLASS_LNG) * toRad;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(CLASS_LAT * toRad) * Math.cos(fix.lat * toRad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  }
+
+  function insideArea(fix, dist) {
+    return dist - Math.min(fix.acc, GPS_TOLERANCE_MAX) <= MAX_RADIUS_METERS;
+  }
+
+  function gpsErrorText(err) {
+    if (err && err.code === 1) return 'Location is blocked for this page. Allow location in your browser settings, then try again.';
+    if (err && err.code === 3) return 'No GPS fix yet. Step outside or near a window and try again. Without mobile data the first fix can take a minute.';
+    return 'Could not read your location. Check that location (GPS) is switched on.';
+  }
+
+  var fixWaiters = [];   // sign-in requests waiting for the warm-up watch to deliver a fix
+
+  /** Start GPS while the student is still typing, so the fix is ready when they tap Sign in. */
+  function startWarmup() {
+    if (!navigator.geolocation || gps.watchId !== null || loadSession()) return;
+    gps.error = null;
+    renderGpsLine();
+    gps.watchId = navigator.geolocation.watchPosition(
+      function (p) {
+        gps.best = toFix(p); gps.error = null; renderGpsLine();
+        if (gps.best.acc <= GPS_MAX_ACCURACY) flushWaiters(null, gps.best);
+      },
+      function (err) {
+        gps.error = err; renderGpsLine();
+        if (err.code === 1) { stopWarmup(); }
+      },
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 60000 }
+    );
+  }
+
+  function stopWarmup() {
+    if (gps.watchId !== null) { navigator.geolocation.clearWatch(gps.watchId); gps.watchId = null; }
+    if (fixWaiters.length) flushWaiters(gps.best ? null : (gps.error || { code: 3 }), gps.best);
+  }
+
+  function flushWaiters(err, fix) {
+    var list = fixWaiters; fixWaiters = [];
+    list.forEach(function (w) { clearTimeout(w.timer); if (err) w.reject(err); else w.resolve(fix); });
+  }
+
+  /**
+   * A fix counts as current if it's recent, or if the warm-up watch is still running
+   * (a watch only reports again when the phone moves, so a still student gets no new readings).
+   */
+  function currentFix(maxAgeMs) {
+    if (!gps.best) return null;
+    var limit = (gps.watchId !== null && !gps.error) ? Math.max(maxAgeMs, 120000) : maxAgeMs;
+    return Date.now() - gps.best.ts < limit ? gps.best : null;
+  }
+
+  function renderGpsLine() {
+    var el = $('gpsLine');
+    if (currentFix(60000)) {
+      var dist = distanceTo(gps.best);
+      if (insideArea(gps.best, dist)) {
+        el.className = 'gps ok';
+        el.textContent = 'Location ready: ' + dist + ' m from class (Â±' + gps.best.acc + ' m).';
+      } else {
+        el.className = 'gps bad';
+        el.textContent = 'You are ' + dist + ' m from class. Sign-in needs you within ' + MAX_RADIUS_METERS + ' m.';
+      }
+    } else if (gps.error) {
+      el.className = 'gps bad';
+      el.textContent = gpsErrorText(gps.error);
+    } else if (gps.watchId !== null) {
+      el.className = 'gps';
+      el.textContent = 'Finding your locationâ€¦ this can take a minute without mobile data.';
+    } else {
+      el.className = 'gps';
+      el.textContent = 'Your location is checked when you sign in.';
+    }
+  }
+
+  /**
+   * Use the current warm-up fix if there is one; if the warm-up watch is running, wait for it;
+   * otherwise ask the GPS once. Works with no network (high accuracy = satellites).
+   */
+  function getFix(maxAgeMs, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var f = currentFix(maxAgeMs);
+      if (f && f.acc <= GPS_MAX_ACCURACY) return resolve(f);
+      if (!navigator.geolocation) return reject({ code: 0 });
+      if (gps.watchId !== null) {
+        // Give the running watch a few seconds; if it stays silent, stop it and take one reading.
+        var w = { resolve: resolve, reject: reject };
+        w.timer = setTimeout(function () {
+          fixWaiters = fixWaiters.filter(function (x) { return x !== w; });
+          stopWarmup();
+          oneReading(maxAgeMs, timeoutMs, resolve, reject);
+        }, Math.min(8000, timeoutMs));
+        fixWaiters.push(w);
+        return;
+      }
+      oneReading(maxAgeMs, timeoutMs, resolve, reject);
+    });
+  }
+
+  function oneReading(maxAgeMs, timeoutMs, resolve, reject) {
+    navigator.geolocation.getCurrentPosition(
+      function (p) { var f = toFix(p); gps.best = f; resolve(f); },
+      reject,
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: maxAgeMs }
+    );
+  }
+
+  /* ================= Session ================= */
+  var pingTimer = null, signingIn = false;
+
+  function loadSession() {
+    var s = lsGet(K.session);
+    if (s && !s.startTs) {   // session saved by the previous version of this page
+      var now = Date.now();
+      s.startTs = now; s.lastPingTs = now; s.pingCount = 0; s.outSince = null;
+      s.dayKey = localDate(now) + '|' + norm(s.section) + '|' + norm(s.rollNo);
+      s.verdict = { onTime: true, diff: null };
+      lsSet(K.session, s);
+    }
+    return s;
+  }
+  function saveSession(s) { lsSet(K.session, s); }
+  function clearSession() { lsDel(K.session); }
+
+  function makeEvent(type, s, fix, dist, ts) {
+    fix = fix || {};
+    return {
+      eventId: newEventId(),
+      eventType: type,
+      section: s.section, rollNo: s.rollNo, name: s.name,
+      lat: round6(fix.lat), lng: round6(fix.lng),
+      distanceMeters: typeof dist === 'number' ? dist : '',
+      accuracy: typeof fix.acc === 'number' ? fix.acc : '',
+      deviceId: s.deviceId || deviceId(),
+      deviceTs: ts || Date.now(),
+      skewMs: currentSkew(),
+      queuedTs: Date.now()
+    };
+  }
+
+  function signIn(e) {
+    if (e) e.preventDefault();
+    if (signingIn) return;
+    var roll = val('rollNoInput'), name = val('studentNameInput'), sec = val('sectionInput');
+    if (!roll || !name || !sec) return say('Fill in roll no, name and section.', 'bad');
+
+    var pressedAt = Date.now();   // sign-in time is when the button was pressed, not when GPS answered
+    if (!isScheduledToday(sec, pressedAt)) {
+      return say('No class is scheduled for section ' + sec + ' on ' + localDate(pressedAt) + ', so sign-in is closed.', 'bad');
+    }
+
+    setSigningIn(true);
+    say('Checking your locationâ€¦');
+    startWarmup();
+    getFix(20000, 45000).then(function (fix) {
+      setSigningIn(false);
+      if (fix.acc > GPS_MAX_ACCURACY) {
+        return say('GPS signal is too weak (Â±' + fix.acc + ' m). Move near a window or outside and try again.', 'bad');
+      }
+      var dist = distanceTo(fix);
+      if (!insideArea(fix, dist)) {
+        return say('You are ' + dist + ' m from class. You need to be within ' + MAX_RADIUS_METERS + ' m to sign in.', 'bad');
+      }
+
+      var v = evaluateLocal(sec, pressedAt);
+      var s = {
+        section: sec, rollNo: roll, name: name, deviceId: deviceId(),
+        startTs: pressedAt, dayKey: localDate(pressedAt) + '|' + norm(sec) + '|' + norm(roll),
+        verdict: v, pingCount: 0, outSince: null, lastFix: fix, lastDist: dist, lastPingTs: Date.now()
+      };
+      saveSession(s);
+      lsSet(K.lastSection, sec);
+      stopWarmup();
+
+      Store.put('daylog', {
+        key: s.dayKey, date: localDate(pressedAt), day: DAY_NAMES[new Date(pressedAt).getDay()],
+        loginTs: pressedAt, loginTime: localHM(pressedAt), section: sec, rollNo: roll, name: name,
+        logoutTime: 'Active', onTime: v.onTime, fined: v.fined, late: v.late, absent: v.absent
+      }).then(renderDay, function () {});
+
+      enqueue(makeEvent('SIGN_IN', s, fix, dist, pressedAt));
+      showSession(s, true);
+      setTimeout(function () { refreshSummary(true); }, 8000 + spread(UPLOAD_SPREAD_MS));   // after this phone's record lands
+
+      var inRoster = !roster || !roster.students.length || byRoll[norm(roll)];
+      say(inRoster ? 'Signed in. ' + (isOffline() ? 'Saved on this phone; it uploads when there is signal.' : '')
+                   : 'Signed in, but roll no ' + roll + ' is not in the class list. Tell your teacher.',
+          inRoster ? 'ok' : 'bad');
+    }, function (err) {
+      setSigningIn(false);
+      say(gpsErrorText(err), 'bad');
+    });
+  }
+
+  function setSigningIn(on) {
+    signingIn = on;
+    $('signInBtn').disabled = on;
+    $('signInBtn').textContent = on ? 'Finding your locationâ€¦' : 'Sign in with location';
+  }
+
+  function showLogin() {
+    stopPings();
+    $('sessionSection').hidden = true;
+    $('loginSection').hidden = false;
+    renderGpsLine();
+  }
+
+  function showSession(s, fresh) {
+    $('loginSection').hidden = true;
+    $('sessionSection').hidden = false;
+    $('activeName').textContent = s.name;
+    $('activeMeta').textContent = 'Roll no ' + s.rollNo + ', section ' + s.section + ', signed in at ' + localHM(s.startTs);
+
+    var vd = verdictOf(s.verdict || { onTime: true, diff: null });
+    var verdict = $('activeVerdict');
+    verdict.innerHTML = '';
+    var pill = document.createElement('span');
+    pill.className = 'pill ' + vd.cls;
+    pill.textContent = vd.text;
+    verdict.appendChild(pill);
+
+    renderPingLine(s);
+    if (fresh) {
+      var old = $('checkmark'), mark = old.cloneNode(true);   // clone restarts the tick animation
+      mark.hidden = false;
+      old.parentNode.replaceChild(mark, old);
+      setTimeout(function () { $('checkmark').hidden = true; }, 2500);
+    }
+    startPings();
+  }
+
+  function renderPingLine(s, err) {
+    var el = $('pingLine');
+    if (!s) return;
+    if (err) {
+      el.className = 'ping';
+      el.textContent = 'Last location check failed: ' + gpsErrorText(err);
+      return;
+    }
+    if (s.outSince) {
+      var left = Math.max(0, Math.ceil((OUT_OF_RANGE_LOGOUT_MS - (Date.now() - s.outSince)) / 60000));
+      el.className = 'ping bad';
+      el.textContent = 'You are outside the class area (' + s.lastDist + ' m). Go back within ' + left +
+        ' min or you will be signed out and marked absent.';
+      return;
+    }
+    el.className = 'ping';
+    el.textContent = 'Keep this page open. Location checked at ' + localHM(s.lastPingTs || s.startTs) +
+      (typeof s.lastDist === 'number' ? ' (' + s.lastDist + ' m from class)' : '') + ', next check in 2 minutes.';
+  }
+
+  function startPings() { if (!pingTimer) pingTimer = setInterval(ping, PING_INTERVAL_MS); }
+  function stopPings() { clearInterval(pingTimer); pingTimer = null; }
+
+  /**
+   * Checked locally every 2 minutes. Only some checks are uploaded:
+   * leaving the area, coming back, and every PING_UPLOAD_EVERY-th check while inside.
+   */
+  function ping() {
+    if (!loadSession()) return;
+    getFix(60000, 30000).then(function (fix) {
+      var s = loadSession();
+      if (!s) return;
+      var now = Date.now(), dist = distanceTo(fix), upload = false;
+      s.lastFix = fix; s.lastDist = dist; s.lastPingTs = now;
+
+      if (insideArea(fix, dist)) {
+        if (s.outSince) { s.outSince = null; upload = true; }
+        else { s.pingCount = (s.pingCount || 0) + 1; upload = s.pingCount % PING_UPLOAD_EVERY === 0; }
+      } else {
+        if (!s.outSince) s.outSince = now;
+        upload = true;
+        if (now - s.outSince >= OUT_OF_RANGE_LOGOUT_MS) { saveSession(s); signOut('AUTO_OUT_OF_BOUNDS'); return; }
+      }
+      saveSession(s);
+      renderPingLine(s);
+      if (upload) enqueue(makeEvent('GPS_PING_2MIN', s, fix, dist, now));
+    }, function (err) {
+      renderPingLine(loadSession(), err);
+    });
+  }
+
+  function signOut(reason, atTs) {
+    var s = loadSession();
+    if (!s) return showLogin();
+    var ts = atTs || Date.now();
+    var auto = reason === 'AUTO_OUT_OF_BOUNDS';
+
+    Store.get('daylog', s.dayKey).then(function (row) {
+      if (!row) return;
+      row.logoutTime = localHM(ts);
+      if (auto) { row.absent = true; row.onTime = false; }
+      return Store.put('daylog', row);
+    }).then(renderDay, function () {});
+
+    var type = auto ? 'AUTO_LOGOUT_ABSENT' : reason === 'SESSION_EXPIRED' ? 'SESSION_EXPIRED' : 'MANUAL_LOGOUT';
+    enqueue(makeEvent(type, s, s.lastFix, s.lastDist, ts));
+
+    clearSession();
+    $('attendanceForm').reset();
+    showLogin();
+    renderRosterHint();
+    if (auto) say('Signed out automatically: you were outside the class area for 10 minutes. Marked absent.', 'bad');
+    else if (reason === 'SESSION_EXPIRED') say('Your last session was left open and has been closed at ' + when(ts) + '.');
+    else say('Signed out of class.');
+  }
+
+  /* ================= Photo (compressed before it is queued) ================= */
+  function compressImage(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('the file could not be read')); };
+      reader.onload = function () {
+        var img = new Image();
+        img.onerror = function () { reject(new Error('this file is not a supported image')); };
+        img.onload = function () {
+          var scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
+          var w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
+          var c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          var ctx = c.getContext('2d');
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(c.toDataURL('image/jpeg', PHOTO_QUALITY));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function savePhoto() {
+    var s = loadSession(), input = $('sessionPhotoInput');
+    var file = input.files && input.files[0];
+    if (!s) return;
+    if (!file) return say('Take or choose a photo first.', 'bad');
+    var btn = $('photoBtn');
+    btn.disabled = true;
+    say('Shrinking the photoâ€¦');
+    compressImage(file).then(function (dataUrl) {
+      var ev = makeEvent('PHOTO_UPLOAD', s, s.lastFix, s.lastDist);
+      ev.imageBase64 = dataUrl;
+      return enqueue(ev).then(function () {
+        input.value = '';
+        var kb = Math.round(dataUrl.length * 0.75 / 1024);
+        say('Photo saved (' + kb + ' KB). ' + (isOffline() ? 'It uploads when there is signal.' : 'Uploading now.'), 'ok');
+      });
+    }).then(function () { btn.disabled = false; }, function (err) {
+      btn.disabled = false;
+      say('Could not save the photo: ' + errText(err) + '.', 'bad');
+    });
+  }
+
+  /* ================= Upload queue ================= */
+  var q = { total: 0, ready: 0, stuck: 0, photos: 0 };
+  var sync = { running: false, timer: null, failures: 0, nextAt: 0, lastError: '', busy: false, tried: {} };
+
+  function isStuck(i) { return (i.serverErrors || 0) >= MAX_SERVER_ERRORS; }
+
+  /** 0..ms, so phones in the same room do not all call the server in the same second. */
+  function spread(ms) { return Math.round(Math.random() * ms); }
+
+  function enqueue(ev) {
+    return Store.add('queue', ev).then(function () {
+      refreshQueue();
+      scheduleSync(300 + spread(UPLOAD_SPREAD_MS));
+    }, function (err) {
+      say('Could not save on this phone: ' + errText(err) + '. Free up some storage and try again.', 'bad');
+      throw err;
+    });
+  }
+
+  function refreshQueue() {
+    return Store.getAll('queue').then(function (items) {
+      q.total = items.length;
+      q.stuck = items.filter(isStuck).length;
+      q.ready = q.total - q.stuck;
+      q.photos = items.filter(function (i) { return i.imageBase64 && !isStuck(i); }).length;
+      renderSync();
+    }, function () {});
+  }
+
+  function scheduleSync(delay) {
+    clearTimeout(sync.timer);
+    sync.nextAt = Date.now() + delay;
+    sync.timer = setTimeout(function () { runSync(false); }, delay);
+  }
+
+  function backoff(n) {
+    var steps = [5, 15, 30, 60, 120, 300];
+    var base = steps[Math.min(n, steps.length) - 1] * 1000;
+    return Math.round(base * (0.7 + Math.random() * 0.6));   // jitter: phones reconnecting together don't all hit at once
+  }
+
+  function callServer(fn, args, timeoutMs) {
+    return inAppsScript() ? callAppsScript(fn, args, timeoutMs) : callHttp(fn, args, timeoutMs);
+  }
+
+  /**
+   * Same calls over plain HTTPS, for a page hosted outside Apps Script.
+   * The POST body goes as text/plain on purpose: application/json would make the browser
+   * send a CORS preflight first, and Apps Script cannot answer one.
+   */
+  function callHttp(fn, args, timeoutMs) {
+    var url = apiUrl();
+    var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var opts = { cache: 'no-store', credentials: 'omit', redirect: 'follow' };
+    if (ctrl) opts.signal = ctrl.signal;
+    if (fn === 'getRosterData') {
+      url += (url.indexOf('?') < 0 ? '?' : '&') + 'action=roster&v=' + encodeURIComponent((args && args[0]) || 'none');
+    } else if (fn === 'getDaySummary') {
+      url += (url.indexOf('?') < 0 ? '?' : '&') + 'action=summary&section=' + encodeURIComponent(args[0] || '') +
+             '&date=' + encodeURIComponent(args[1] || '');
+    } else if (fn === 'recordAttendanceBatch') {
+      opts.method = 'POST';
+      opts.body = JSON.stringify({ action: 'record', events: args[0] });
+    } else {
+      return Promise.reject(new Error('Unknown server call: ' + fn));
+    }
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        if (ctrl) ctrl.abort();
+        reject(new Error('No reply from the server (weak signal)'));
+      }, timeoutMs);
+      fetch(url, opts).then(function (res) {
+        if (!res.ok) throw new Error('Server replied ' + res.status);
+        return res.json();
+      }).then(function (body) {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        if (body && body.ok) resolve(body.result);
+        else reject(new Error((body && body.error) || 'Unexpected reply from the server'));
+      }, function (e) {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        reject(new Error(e && e.name === 'SyntaxError' ? 'The web app link did not return data. Check API_URL.' : 'Could not reach the server'));
+      });
+    });
+  }
+
+  function callAppsScript(fn, args, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (!settled) { settled = true; reject(new Error('No reply from the server (weak signal)')); }
+      }, timeoutMs);
+      var runner = google.script.run
+        .withSuccessHandler(function (r) { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } })
+        .withFailureHandler(function (e) { if (!settled) { settled = true; clearTimeout(timer); reject(e || new Error('Network error')); } });
+      runner[fn].apply(runner, args || []);
+    });
+  }
+
+  function stripLocal(item) {
+    var out = {};
+    for (var k in item) {
+      if (k !== 'id' && k !== 'serverErrors' && k !== 'lastError' && k !== 'queuedTs') out[k] = item[k];
+    }
+    return out;
+  }
+
+  /**
+   * One upload at a time. Text records go first, in batches; photos go one per call after them.
+   * Anything the server confirms ('ok' or 'dup') is removed; everything else stays on the phone.
+   */
+  function runSync(force) {
+    clearTimeout(sync.timer);
+    sync.timer = null;
+    if (sync.running || !hasServer()) return;
+    if (isOffline() && !force) { renderSync(); return; }
+
+    Store.getAll('queue').then(function (items) {
+      var ready = items.filter(function (i) { return !isStuck(i); }).sort(function (a, b) { return a.id - b.id; });
+      if (!ready.length) { sync.failures = 0; renderSync(); return; }
+
+      var text = ready.filter(function (i) { return !i.imageBase64; });
+      var batch = text.length ? text.slice(0, BATCH_SIZE) : ready.slice(0, 1);
+      sync.running = true;
+      renderSync();
+      var t0 = Date.now();
+
+      var payload = batch.map(function (it) {
+        var o = stripLocal(it);
+        // Tell the server this is a resend, so it double-checks the sheet for this record
+        if (sync.tried[it.eventId] || (it.queuedTs && Date.now() - it.queuedTs > 120000)) o.retry = 1;
+        sync.tried[it.eventId] = 1;
+        return o;
+      });
+
+      return callServer('recordAttendanceBatch', [payload], CALL_TIMEOUT_MS).then(function (res) {
+        sync.running = false;
+        noteServerTime(t0, Date.now(), res && res.serverTs);
+        if (!res || res.fatal) throw new Error(res && res.fatal ? res.fatal : 'Empty reply from the server');
+
+        if (res.busy) {
+          // The sheet is busy with other phones. Nothing was written, nothing is wrong:
+          // wait the time the server asked for and keep the records.
+          sync.busy = true;
+          sync.lastError = '';
+          scheduleSync((res.retryAfterMs || 15000) + spread(UPLOAD_SPREAD_MS));
+          renderSync();
+          return;
+        }
+        sync.busy = false;
+
+        var results = res.results || {}, done = [], rejected = [];
+        batch.forEach(function (it) {
+          var r = results[it.eventId];
+          if (r === 'ok' || r === 'dup') done.push(it.id);
+          else if (typeof r === 'string') { it.serverErrors = (it.serverErrors || 0) + 1; it.lastError = r; rejected.push(it); }
+        });
+        if (!done.length && !rejected.length) throw new Error('The server did not confirm any records');
+
+        return Store.remove('queue', done)
+          .then(function () { return Promise.all(rejected.map(function (it) { return Store.put('queue', it); })); })
+          .then(function () {
+            sync.failures = 0;
+            sync.lastError = '';
+            if (done.length) lsSet(K.lastUpload, Date.now());
+            return refreshQueue();
+          })
+          .then(function () { scheduleSync(250); });   // keep going until the queue is empty
+      });
+    }).catch(function (err) {
+      sync.running = false;
+      sync.busy = false;
+      sync.failures++;
+      sync.lastError = errText(err);
+      scheduleSync(backoff(sync.failures));
+      renderSync();
+    });
+  }
+
+  function onSyncButton() {
+    Store.getAll('queue').then(function (items) {
+      var stuck = items.filter(isStuck);
+      return Promise.all(stuck.map(function (i) { i.serverErrors = 0; return Store.put('queue', i); }));
+    }).then(function () {
+      sync.failures = 0;
+      return refreshQueue();
+    }).then(function () { runSync(true); });
+  }
+
+  function renderSync() {
+    var bar = $('syncBar'), title = '', detail = '', state = 'ok';
+    var last = Number(lsGet(K.lastUpload)) || 0;
+    var records = plural(q.ready, 'record') + (q.photos ? ' (' + plural(q.photos, 'photo') + ')' : '');
+
+    if (!hasServer() && configPending) {
+      state = 'busy'; title = 'Starting up.';
+      detail = 'Looking for the attendance sheet. You can still sign in: records are saved on this phone.';
+    } else if (!hasServer()) {
+      state = 'stuck'; title = 'Not connected to the attendance sheet.';
+      detail = (/\/dev$/.test(apiUrl()) ? 'The link in config.json is the test link ending in /dev. Use the deployed link ending in /exec. '
+               : 'Put your Apps Script web app link (ending in /exec) in config.json, next to this page. ') +
+               (q.total ? plural(q.total, 'record') + ' saved on this phone.' : '');
+    } else if (sync.running) {
+      state = 'busy'; title = 'Uploading ' + records + 'â€¦';
+    } else if (q.ready && isOffline()) {
+      state = 'offline'; title = 'Offline. ' + records + ' saved on this phone.';
+      detail = 'They upload by themselves when signal returns.';
+    } else if (q.ready && sync.busy) {
+      state = 'busy'; title = 'Waiting for the class rush. ' + records + ' waiting.';
+      detail = 'Many phones are uploading at once. Trying again in ' + Math.max(1, Math.round((sync.nextAt - Date.now()) / 1000)) + ' s.';
+    } else if (q.ready && sync.failures) {
+      state = 'retry'; title = 'Weak signal. ' + records + ' waiting.';
+      detail = 'Trying again in ' + Math.max(1, Math.round((sync.nextAt - Date.now()) / 1000)) + ' s.';
+    } else if (q.ready) {
+      state = 'busy'; title = records.charAt(0).toUpperCase() + records.slice(1) + ' waiting to upload.';
+    } else if (isOffline()) {
+      state = 'offline'; title = 'Offline. Nothing waiting to upload.';
+      detail = 'You can still sign in; it is saved on this phone.';
+    } else {
+      state = 'ok'; title = 'Online. Everything is uploaded.';
+    }
+
+    if (q.stuck) {
+      if (!q.ready) state = 'stuck';
+      detail += (detail ? ' ' : '') + plural(q.stuck, 'record') + ' could not be saved to the sheet. Tap Retry.';
+    }
+    if (last) detail += (detail ? ' ' : '') + 'Last upload ' + when(last) + '.';
+
+    bar.setAttribute('data-state', state);
+    $('syncTitle').textContent = title;
+    var d = $('syncDetail');
+    d.textContent = detail;
+
+    var skew = currentSkew();
+    if (skew !== null && Math.abs(skew) >= 3 * 60000) {
+      var c = document.createElement('span');
+      c.className = 'clock';
+      c.textContent = 'This phone\'s clock is ' + Math.round(Math.abs(skew) / 60000) + ' min ' +
+        (skew > 0 ? 'fast' : 'slow') + '. Set it to automatic time so sign-in times are right.';
+      d.appendChild(c);
+    }
+
+    var btn = $('syncBtn');
+    btn.hidden = !hasServer() || (!q.total);
+    btn.textContent = q.stuck ? 'Retry' : 'Upload now';
+    btn.disabled = sync.running;
+  }
+
+  /* ================= Today: whole class ================= */
+
+  /** Which class the figures are about: the open session, else the last one used on this phone. */
+  function summaryScope() {
+    var s = loadSession();
+    return (s && s.section) || lsGet(K.lastSection) || '';
+  }
+
+  function savedSummary() {
+    try {
+      var v = JSON.parse(lsGet(K.summary) || 'null');
+      return v && v.date === localDate(Date.now()) ? v : null;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * Asks the sheet for today's sign-ins for the whole class. With no signal this is skipped and
+   * the figures come from the last answer plus whatever this phone recorded itself.
+   */
+  function refreshSummary(force) {
+    if (!hasServer() || isOffline()) return Promise.resolve();
+    var saved = savedSummary();
+    var scope = summaryScope();
+    if (!force && saved && saved.scope === scope && Date.now() - (saved.fetchedTs || 0) < SUMMARY_REFRESH_MS) return Promise.resolve();
+
+    return callServer('getDaySummary', [scope, localDate(Date.now())], CALL_TIMEOUT_MS).then(function (res) {
+      if (!res || !res.students) return;
+      res.scope = scope;
+      res.fetchedTs = Date.now();
+      lsSet(K.summary, JSON.stringify(res));
+      renderDay();
+    }, function () { /* keep showing the last figures */ });
+  }
+
+  function rosterCount(section) {
+    if (!roster) return 0;
+    if (!section || !roster.students.length) return rosterTotal();
+    var n = 0;
+    roster.students.forEach(function (st) { if (norm(st[2]) === norm(section)) n++; });
+    return n || rosterTotal();
+  }
+
+  function renderDay() {
+    Store.getAll('daylog').then(function (rows) {
+      var today = localDate(Date.now());
+      var cutoff = localDate(Date.now() - 30 * 86400000);
+      var old = rows.filter(function (r) { return r.date < cutoff; }).map(function (r) { return r.key; });
+      if (old.length) Store.remove('daylog', old).catch(function () {});
+
+      var scope = summaryScope();
+      var summary = savedSummary();
+      var byRoll = {};
+
+      // what the sheet knows about the whole class
+      if (summary && summary.scope === scope) {
+        summary.students.forEach(function (st) {
+          byRoll[norm(st[1])] = { time: st[0], rollNo: st[1], name: st[2], section: st[3], status: st[4] };
+        });
+      }
+
+      // what this phone did, which may not have reached the sheet yet
+      rows.filter(function (r) {
+        return r.date === today && (!scope || norm(r.section) === norm(scope));
+      }).sort(function (a, b) { return a.loginTs - b.loginTs; })
+        .forEach(function (r) {
+          var k = norm(r.rollNo);
+          if (byRoll[k]) return;
+          byRoll[k] = {
+            time: r.loginTime, rollNo: r.rollNo, name: r.name, section: r.section,
+            status: r.absent ? 'Absent' : r.late ? 'Late' : r.fined ? 'Fined' : 'On Time'
+          };
+        });
+
+      var list = [];
+      for (var k in byRoll) list.push(byRoll[k]);
+      list.sort(function (a, b) { return a.time < b.time ? -1 : a.time > b.time ? 1 : 0; });
+
+      var marked = list.filter(function (r) { return r.status === 'Absent'; }).length;
+      var present = list.length - marked;
+      var total = rosterCount(scope);
+
+      $('totalStudentsCount').textContent = total;
+      $('presentStudentsCount').textContent = present;
+      $('finedStudentsCount').textContent = list.filter(function (r) { return r.status === 'Fined' || r.status === 'Late'; }).length;
+      $('lateStudentsCount').textContent = list.filter(function (r) { return r.status === 'Late'; }).length;
+      $('absentStudentsCount').textContent = total ? Math.max(total - present, 0) : marked;
+
+      $('dayScope').textContent = scopeLine(scope, summary);
+
+      var tbody = $('studentTableBody');
+      tbody.innerHTML = '';
+      if (!list.length) {
+        var tr0 = document.createElement('tr'), td0 = document.createElement('td');
+        td0.colSpan = 5; td0.className = 'empty'; td0.textContent = 'No sign-ins yet today.';
+        tr0.appendChild(td0); tbody.appendChild(tr0);
+        return;
+      }
+      list.forEach(function (r) {
+        var tr = document.createElement('tr');
+        [r.time, r.rollNo, r.name, r.section].forEach(function (v) {
+          var td = document.createElement('td'); td.textContent = v; tr.appendChild(td);   // textContent: no HTML injection
+        });
+        var vd = verdictOf({ absent: r.status === 'Absent', late: r.status === 'Late', fined: r.status === 'Fined', diff: null });
+        var tdS = document.createElement('td'), pill = document.createElement('span');
+        pill.className = 'pill ' + vd.cls; pill.textContent = vd.label;
+        tdS.appendChild(pill); tr.appendChild(tdS);
+        tbody.appendChild(tr);
+      });
+    }, function () {});
+  }
+
+  /** Says whose figures these are and how old, so nobody reads a stale screen as the truth. */
+  function scopeLine(scope, summary) {
+    var who = scope ? scope + ', whole class' : 'Whole class';
+    if (!summary || summary.scope !== scope) {
+      return hasServer() && !isOffline() ? who + ' \u00b7 loading from the sheet' : 'This phone only \u00b7 no signal yet today';
+    }
+    var mins = Math.round((Date.now() - summary.fetchedTs) / 60000);
+    var when = mins < 1 ? 'updated just now' : 'updated ' + plural(mins, 'min') + ' ago';
+    return who + ' \u00b7 ' + when + (isOffline() ? ' (offline)' : '');
+  }
+
+  /* ================= Start-up ================= */
+
+  /** Records queued by the previous version get a stable id and a real timestamp before upload. */
+  function migrateQueue() {
+    return Store.drainFallback().then(function () { return Store.getAll('queue'); }).then(function (items) {
+      var fix = items.filter(function (i) { return !i.eventId || !i.deviceTs; });
+      return Promise.all(fix.map(function (i) {
+        if (!i.eventId) i.eventId = newEventId();
+        if (!i.deviceTs) {
+          var p = Date.parse(i.deviceTime);
+          if (isNaN(p)) { i.deviceTs = Date.now(); i.timeGuessed = true; } else { i.deviceTs = p; }
+        }
+        if (!i.imageBase64) delete i.imageBase64;
+        return Store.put('queue', i);
+      }));
+    }).catch(function () {});
+  }
+
+  function onRollInput() {
+    var s = byRoll[norm(val('rollNoInput'))];
+    if (s) {
+      $('studentNameInput').value = s[1];
+      if (s[2]) $('sectionInput').value = s[2];
+      renderRosterHint('Found in the class list.');
+    } else if (val('rollNoInput') && roster && roster.students.length) {
+      renderRosterHint('Not in the class list saved on this phone. Check your roll no.', true);
+    } else {
+      renderRosterHint();
+    }
+  }
+
+  function onNameChange() {
+    if (val('rollNoInput')) return;
+    var hits = byName[norm(val('studentNameInput'))];
+    if (hits && hits.length === 1) {
+      $('rollNoInput').value = hits[0][0];
+      if (hits[0][2]) $('sectionInput').value = hits[0][2];
+    }
+  }
+
+  function bind() {
+    $('attendanceForm').addEventListener('submit', signIn);
+    $('attendanceForm').addEventListener('focusin', startWarmup);
+    $('rollNoInput').addEventListener('input', onRollInput);
+    $('studentNameInput').addEventListener('change', onNameChange);
+    $('photoBtn').addEventListener('click', savePhoto);
+    $('signOutBtn').addEventListener('click', function () { signOut('MANUAL_LOGOUT'); });
+    $('syncBtn').addEventListener('click', onSyncButton);
+
+    window.addEventListener('online', function () { sync.failures = 0; renderSync(); runSync(false); refreshRoster(false); refreshSummary(false); });
+    window.addEventListener('offline', renderSync);
+
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) return;
+      renderDay();
+      refreshSummary(false);
+      if (q.total) runSync(false);
+      var s = loadSession();
+      if (s && Date.now() - (s.lastPingTs || 0) >= PING_INTERVAL_MS) ping();   // timers pause while the screen is off
+    });
+
+    // Apps Script pages cannot reopen without signal, so warn before closing while offline.
+    window.addEventListener('beforeunload', function (e) {
+      if (isOffline() && (loadSession() || q.total)) { e.preventDefault(); e.returnValue = ''; }
+    });
+
+    setInterval(renderSync, 5000);
+  }
+
+  function boot() {
+    roster = loadCachedRoster();
+    bind();
+    applyRoster();
+    renderSync();
+
+    if (navigator.storage && navigator.storage.persist) {
+      try { navigator.storage.persist().catch(function () {}); } catch (e) {}
+    }
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        navigator.permissions.query({ name: 'geolocation' }).then(function (st) {
+          if (st.state === 'granted' && !loadSession()) startWarmup();
+        }, function () {});
+      } catch (e) {}
+    }
+
+    Store.open().then(migrateQueue).then(function () {
+      var s = loadSession();
+      if (s && Date.now() - s.startTs > SESSION_MAX_MS) {
+        signOut('SESSION_EXPIRED', s.lastPingTs || s.startTs);   // left open overnight
+      } else if (s) {
+        showSession(s, false);
+        if (Date.now() - (s.lastPingTs || 0) >= PING_INTERVAL_MS) ping();
+      } else {
+        showLogin();
+      }
+      renderDay();
+      return refreshQueue();
+    }).then(function () {
+      runSync(false);
+      // with no class list this phone cannot sign anyone in, so ask at once;
+      // otherwise the check can wait a little and miss the rush
+      if (!roster) refreshRoster(true);
+      else setTimeout(function () { refreshRoster(true); }, spread(ROSTER_SPREAD_MS));
+
+      // whole-class figures: once on opening, then while the page stays open
+      setTimeout(function () { refreshSummary(true); }, 1500 + spread(UPLOAD_SPREAD_MS));
+      setInterval(function () { if (!document.hidden) refreshSummary(false); }, SUMMARY_REFRESH_MS);
+    });
+  }
+
+  /**
+   * A phone opening this for the first time has no class list yet, and the sheet may be slow or
+   * unreachable. roster.json sits next to this page, so the list arrives with the page itself.
+   * The sheet's own copy replaces it as soon as one arrives.
+   */
+  function loadBundledRoster() {
+    if (roster || inAppsScript()) return;
+    fetch(ROSTER_FILE, { cache: 'no-store' }).then(function (res) {
+      if (!res.ok) throw new Error('roster.json: ' + res.status);
+      return res.json();
+    }).then(function (data) {
+      if (roster || !data || !data.students || !data.students.length) return;   // the sheet got there first
+      roster = {
+        version: 'bundled', students: data.students, timetable: data.timetable || [],
+        defaultRules: data.defaultRules || DEFAULT_RULES, savedAt: Date.now()
+      };
+      lsSet(K.roster, roster);
+      applyRoster();
+      renderDay();
+    }, function () { /* no bundled copy: the sheet is the only source */ });
+  }
+
+  /**
+   * Reads the web app link from config.json, so it can be changed without touching this file.
+   * The last link that worked is kept on the phone, so an offline start still knows where to upload.
+   * Inside Apps Script none of this is used.
+   */
+  function loadConfig() {
+    if (inAppsScript()) return;
+    liveApi = lsGet(K.apiUrl) || '';   // the link that worked last time, so an offline start knows it
+  }
+
+  /**
+   * Checks config.json in the background. The page never waits for it: a phone with no signal,
+   * or a config.json that is missing or broken, must still open and let a student sign in.
+   */
+  function refreshConfig() {
+    if (inAppsScript()) return;
+    configPending = !apiUrl();
+    var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var opts = { cache: 'no-store' };
+    if (ctrl) opts.signal = ctrl.signal;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, CONFIG_WAIT_MS);
+
+    fetch(CONFIG_URL, opts).then(function (res) {
+      if (!res.ok) throw new Error('config.json: ' + res.status);
+      return res.json();
+    }).then(function (cfg) {
+      clearTimeout(timer);
+      configPending = false;
+      var url = cfg && String(cfg.apiUrl || '').trim();
+      if (!url || url === apiUrl()) { renderSync(); return; }
+      var had = apiReady();
+      liveApi = url;
+      lsSet(K.apiUrl, url);
+      renderSync();
+      if (!had) { refreshRoster(true); runSync(false); refreshSummary(true); }   // first link this phone has seen
+    }, function () {
+      clearTimeout(timer);
+      configPending = false;
+      renderSync();   // offline or no config.json: carry on with whatever the phone already knew
+    });
+  }
+
+  /** Hosted copies (GitHub Pages) can keep the page itself on the phone, so it opens with no signal. */
+  function setupOfflineShell() {
+    if (inAppsScript()) return;   // Apps Script pages cannot register a service worker
+    try {
+      var link = document.createElement('link');
+      link.rel = 'manifest'; link.href = 'manifest.webmanifest';
+      document.head.appendChild(link);
+      var icon = document.createElement('link');
+      icon.rel = 'apple-touch-icon'; icon.href = 'icon-192.png';
+      document.head.appendChild(icon);
+      if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+        navigator.serviceWorker.register('sw.js').then(function () { return navigator.serviceWorker.ready; })
+          .then(function () { offlineReady(true); }, function () { offlineReady(false); });
+      } else {
+        offlineReady(false);
+      }
+    } catch (e) { offlineReady(false); }
+  }
+
+  /**
+   * Says plainly whether this page will open without signal. Without it, a phone that failed to
+   * save the page looks fine until the day there is no network.
+   */
+  function offlineReady(ok) {
+    var el = $('offlineLine');
+    if (!el) return;
+    if (ok) {
+      el.textContent = 'Saved on this phone: this page opens without signal.';
+      el.style.color = 'var(--ok)';
+    } else {
+      el.textContent = 'Not saved for offline use yet. Open this page once with signal, using the full link ending in a slash.';
+      el.style.color = 'var(--bad)';
+    }
+  }
+
+  setupOfflineShell();
+  loadConfig();
+  boot();
+  refreshConfig();
+  loadBundledRoster();
+})();
+</script>
+</body>
+</html>
+
