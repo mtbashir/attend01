@@ -303,6 +303,17 @@ run('buildRegister()');
 const PR = ctx.__gas.sheets['Attendance Register'].raw;
 assert.strictEqual(PR.find((r) => r[2] === 'Abdullah Umar')[8], 'Late');
 assert.strictEqual(PR.find((r) => r[2] === 'Ali Dhillon')[8], 'Present', 'leaving after the class ended is not an absence');
+// The old Sheet2 keeps its sync time as text and its Device Time in the sheet's Pacific time:
+// a sign-out there at 07:14 (Pacific) is 19:14 in Pakistan, during class -> left early, shown as 19:14;
+// one at 08:45 (Pacific) is 20:45 in Pakistan, after the 20:30 end -> ignored.
+const S2 = ctx.__gas.sheets.Sheet2;
+const legacy = (id, name, roll, hms, type) => { const r = ['9/30/2026 ' + hms, DAY, 'x', hms, type, roll, 'ECOM-SEP-26', name, 1, 2, 3, '', 'D-' + id, '', type === 'SIGN_IN' ? 'On Time' : '', '', '', '', '', '', 0, '', id]; S2.raw.push(r); S2.shown.push(r.map(String)); };
+legacy('l1', 'Abdullah Umar', '1', '6:47:00', 'SIGN_IN'); legacy('l2', 'Abdullah Umar', '1', '7:14:00', 'AUTO_LOGOUT_ABSENT');
+legacy('l3', 'Ali Dhillon', '2', '8:45:00', 'AUTO_LOGOUT_ABSENT');
+run('buildRegister()');
+const PR2 = ctx.__gas.sheets['Attendance Register'].raw;
+assert.strictEqual(PR2.find((r) => r[2] === 'Abdullah Umar')[8], 'Late · Left early (out of area 19:14)', 'old Pacific-time sign-out shown in Pakistan time');
+assert.strictEqual(PR2.find((r) => r[2] === 'Ali Dhillon')[8], 'Present', 'old sign-out after the class ended is ignored');
 ctx.__gas.ssTz = null;
 console.log('time zone ok (sheet on Pacific time, classes in Pakistan time; walking out after class is not absent)');
 

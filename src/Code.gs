@@ -1084,8 +1084,15 @@ function buildRegister() {
       if (shown !== null && day === e.date && Math.abs(shown - e.min) <= 3) e.min = shown;
       return e;
     }
-    return shown === null ? null : { date: day, min: shown };
+    // No real sync time (the old Sheet2 holds it as text): B and D were written in the spreadsheet's
+    // own time zone (US Pacific on the live sheet), so move them into the class time zone
+    if (shown === null || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+    var off = Utilities.formatDate(new Date(day + 'T12:00:00Z'), sheetTz, 'Z');          // e.g. -0700
+    var inst = new Date(day + 'T' + hm_(shown) + ':00' + off.slice(0, 3) + ':' + off.slice(3));
+    if (isNaN(inst.getTime())) return { date: day, min: shown };
+    return { date: Utilities.formatDate(inst, tz, 'yyyy-MM-dd'), min: minutes_(Utilities.formatDate(inst, tz, 'HH:mm')) };
   }
+  var sheetTz = ss.getSpreadsheetTimeZone();
   var unmatched = [], unmatchedSeen = {};
 
   // status[sessionIndex][studentIndex]
