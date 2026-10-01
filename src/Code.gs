@@ -27,6 +27,9 @@ var CONFIG = {
   //   '{date}'            ->  "2026-09-30"          (a tab per day, all classes together)
   LOG_SHEET_PATTERN: '{date} {section}',
   LEGACY_LOG_SHEET: 'Sheet2',   // rows written before this change: still read, never added to
+  // The time zone the classes run in. Sign-in times, dates and lateness are worked out in it,
+  // whatever the spreadsheet's own setting (File > Settings) says. Blank = the spreadsheet's setting.
+  TIME_ZONE: 'Asia/Karachi',
   REGISTER_SHEET: 'Attendance Register',   // every student x every session, rebuilt by buildRegister()
   PHOTO_FOLDER: 'Classroom Attendance Photos',
   PHOTO_PUBLIC_LINK: false,     // true = anyone with the link can open student photos (old behaviour)
@@ -401,7 +404,7 @@ function recordAttendanceBatch(events) {
   if (!events || !events.length) return out;
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var tz = ss.getSpreadsheetTimeZone();
+  var tz = classTz_(ss);
   var timetable = loadRoster_().timetable;
   var seen = seenIds_(ss, events, tz);
 
@@ -763,7 +766,7 @@ function rowKey_(r) {
  */
 function getDaySummary(section, date) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var tz = ss.getSpreadsheetTimeZone();
+  var tz = classTz_(ss);
   var day = text_(date) || Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
   var sec = text_(section).toLowerCase();
   var cache = CacheService.getScriptCache();
@@ -856,7 +859,7 @@ function collectSignIns_(vals, day, sec, byRoll) {
  */
 function updateFlags() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var tz = ss.getSpreadsheetTimeZone();
+  var tz = classTz_(ss);
   var timetable = loadRoster_().timetable;
   var now = Date.now();
   var today = Utilities.formatDate(new Date(now), tz, 'yyyy-MM-dd');
@@ -993,7 +996,7 @@ var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
  */
 function buildRegister() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var tz = ss.getSpreadsheetTimeZone();
+  var tz = classTz_(ss);
   var roster = loadRoster_();
   var now = new Date();
   var today = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
@@ -1026,7 +1029,9 @@ function buildRegister() {
     var sh = CONFIG.LEGACY_LOG_SHEET ? ss.getSheetByName(CONFIG.LEGACY_LOG_SHEET) : null;
     if (sh && sh.getLastRow() > 1) {
       var n = Math.min(sh.getLastColumn(), HEADERS.length);
-      sh.getRange(2, 1, sh.getLastRow() - 1, n).getDisplayValues().forEach(function (r) {
+      var synced = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
+      sh.getRange(2, 1, sh.getLastRow() - 1, n).getDisplayValues().forEach(function (r, i) {
+        r.syncedAt = synced[i][0];
         var k = dayText_(r[1], tz) + '|' + text_(r[6]).toLowerCase();
         (legacy[k] = legacy[k] || []).push(r);
       });
@@ -1040,8 +1045,11 @@ function buildRegister() {
     var sh = ss.getSheetByName(logSheetName_(date, section));
     if (sh && sh.getLastRow() > 1) {
       var n = Math.min(sh.getLastColumn(), HEADERS.length);
-      sh.getRange(2, 1, sh.getLastRow() - 1, n).getDisplayValues().forEach(function (r) {
-        if (text_(r[6]).toLowerCase() === section.toLowerCase()) rows.push(r);   // '{date}' pattern: all classes in one tab
+      var synced = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();   // A Server Sync Time, as a real instant
+      sh.getRange(2, 1, sh.getLastRow() - 1, n).getDisplayValues().forEach(function (r, i) {
+        if (text_(r[6]).toLowerCase() !== section.toLowerCase()) return;   // '{date}' pattern: all classes in one tab
+        r.syncedAt = synced[i][0];
+        rows.push(r);
       });
     }
     rows = rows.concat(legacyRows()[k] || []);
@@ -1059,6 +1067,19 @@ function buildRegister() {
     return byKey[studentKey_(r[5], r[7])] || byName[text_(r[6]).toLowerCase() + '|' + text_(r[7]).toLowerCase()] || null;
   }
 
+  /**
+   * Minute of the day (class time zone) an event happened. Column D was written in whatever zone the
+   * spreadsheet was set to, so it is only trusted when the sync time is missing; the sync time
+   * (column A) is a real instant, and U says how long the record waited on the phone.
+   */
+  function eventMin(r) {
+    if (r.syncedAt instanceof Date) {
+      var at = new Date(r.syncedAt.getTime() - (Number(r[20]) || 0) * 60000);
+      return minutes_(Utilities.formatDate(at, tz, 'HH:mm'));
+    }
+    return timeMin_(r[3]);
+  }
+
   // status[sessionIndex][studentIndex]
   var status = sessions.map(function (t) {
     var out = { any: false };
@@ -1069,7 +1090,13 @@ function buildRegister() {
       var type = text_(r[4]);
       if (type !== 'SIGN_IN' && type !== 'AUTO_LOGOUT_ABSENT') return;
       if (type === 'SIGN_IN' && !mine(r)) return;
-      if (type === 'AUTO_LOGOUT_ABSENT' && !only) return;   // cannot tell which of the day's sessions it ended
+      if (type === 'AUTO_LOGOUT_ABSENT') {
+        if (!only) return;                                  // cannot tell which of the day's sessions it ended
+        // Walking out after the class has ended is not an absence (the old page did this to
+        // students who left with it still open). Only a sign-out during class counts.
+        var end = windowOf_(t).end, m = eventMin(r);
+        if (end !== null && m !== null && m > end) return;
+      }
       var st = whoIs(r);
       if (!st) return;
       var cur = out[st.i] || { signedIn: false };
@@ -1445,6 +1472,11 @@ function rules_(v) {
   if (!n || n.length < 3) return null;
   var r = [Number(n[0]), Number(n[1]), Number(n[2])];
   return (r[0] <= r[1] && r[1] <= r[2]) ? r : null;
+}
+
+/** The classes' time zone (CONFIG.TIME_ZONE), falling back to the spreadsheet's setting. */
+function classTz_(ss) {
+  return CONFIG.TIME_ZONE || (ss || SpreadsheetApp.getActiveSpreadsheet()).getSpreadsheetTimeZone();
 }
 
 /** One student, even when two share a roll no. */

@@ -104,7 +104,7 @@
           sheetOrder.splice(index === undefined ? sheetOrder.length : index, 0, name);
           return sh;
         },
-        getSpreadsheetTimeZone: function () { return TZ; }
+        getSpreadsheetTimeZone: function () { return G.__gas.ssTz || TZ; }
       };
     },
     getActive: function () { return G.SpreadsheetApp.getActiveSpreadsheet(); },

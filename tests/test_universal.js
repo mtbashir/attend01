@@ -263,4 +263,31 @@ eq(amna2.slice(3), [1, 0, 1, 0, 0, '', 'No data', 'Present', 'Late', ''], 'unuse
 assert.strictEqual(G2.find((r) => r[2] === 'Dua')[6], 2, 'Dua still has exactly 2 absences');
 console.log('attendance register ok (present / fined / late / absent / never came / left early / future / other class / old Sheet2 rows / unused day)');
 
+// ---------------------------------------------------------------- 7. spreadsheet set to US Pacific time (the live sheet is)
+// Class times are Pakistan time; sign-ins must be judged in Pakistan time whatever the sheet setting.
+freshSheets();
+ctx.__gas.ssTz = 'America/Los_Angeles';
+const pacificMidnight = (day) => { const d = new Date(day + 'T12:00:00Z'); const off = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', timeZoneName: 'shortOffset' }).formatToParts(d).find((p) => p.type === 'timeZoneName').value; const h = -Number(off.replace('GMT', '')); return new Date(day + 'T' + String(h).padStart(2, '0') + ':00:00Z'); };
+const P = ctx.__gas.sheets.Roster;
+P.raw = [LIVE, ['ECOM-SEP-26', '1', 'Abdullah Umar', '', 'ECOM-SEP-26', '3', 'Thursday', pacificMidnight(DAY), 'ECOM-SEP-26', t1899(18, 30), t1899(20, 30), 5, 10, 20, 31.47084875, 74.40948265, 300],
+         ['ECOM-SEP-26', '2', 'Ali Dhillon', '', '', '', '', '', '', '', '', '', '', '', '', '', '']];
+P.shown = P.raw.map((r, i) => r.map((v, j) => !i ? v : j === 7 && v ? '1-Oct-2026' : j === 9 && v ? '6:30:00 PM' : j === 10 && v ? '8:30:00 PM' : String(v)));
+P.maxCols = 30;
+run('clearRosterCache()');
+assert.strictEqual(run("getRosterData('none')").timetable[0].date, DAY, 'a Roster date cell (midnight in the sheet\'s zone) keeps its date');
+ctx.__p = [ev('pk1', 'SIGN_IN', '1', 'Abdullah Umar', at('18:42'), { lat: 31.4708, lng: 74.4095 }),
+           ev('pk2', 'SIGN_IN', '2', 'Ali Dhillon', at('18:31'), { lat: 31.4708, lng: 74.4095 }),
+           ev('pk3', 'AUTO_LOGOUT_ABSENT', '2', 'Ali Dhillon', at('20:45'))];   // walked out after class with the page open
+run('recordAttendanceBatch(__p)');
+const pk = Object.fromEntries(run('__logRows()').map((x) => [x[22], x]));
+assert.strictEqual([pk.pk1[1], pk.pk1[3], pk.pk1[13], pk.pk1[16], pk.pk1[18]].join('|'), DAY + '|18:42:00|+12 mins|Late|3',
+  'judged in Pakistan time, not the sheet\'s Pacific time: ' + [pk.pk1[1], pk.pk1[3], pk.pk1[13]].join('|'));
+assert.ok(ctx.__gas.sheets[DAY + ' ECOM-SEP-26'], 'tab named by the Pakistan date');
+run('buildRegister()');
+const PR = ctx.__gas.sheets['Attendance Register'].raw;
+assert.strictEqual(PR.find((r) => r[2] === 'Abdullah Umar')[8], 'Late');
+assert.strictEqual(PR.find((r) => r[2] === 'Ali Dhillon')[8], 'Present', 'leaving after the class ended is not an absence');
+ctx.__gas.ssTz = null;
+console.log('time zone ok (sheet on Pacific time, classes in Pakistan time; walking out after class is not absent)');
+
 console.log('\nALL UNIVERSAL TESTS PASSED');
