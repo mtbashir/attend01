@@ -343,6 +343,12 @@ run('buildRegister()');
 const PR2 = ctx.__gas.sheets['Attendance Register'].raw;
 assert.strictEqual(PR2.find((r) => r[2] === 'Abdullah Umar')[8], 'Late · Left early (out of area 19:14)', 'old Pacific-time sign-out shown in Pakistan time');
 assert.strictEqual(PR2.find((r) => r[2] === 'Ali Dhillon')[8], 'Present', 'old sign-out after the class ended is ignored');
+// An old sign-out stamped 07:14 on the class day (Pakistan time), long before sign-in opened, is ignored
+const amAt = new Date(DAY + 'T07:14:00+05:00');
+const r7 = [amAt, DAY, 'x', '19:14:00', 'AUTO_LOGOUT_ABSENT', '2', 'ECOM-SEP-26', 'Ali Dhillon', 1, 2, 3, '', 'D-x', '', '', '', '', '', '', '', 0, '', 'l4'];
+S2.raw.push(r7); S2.shown.push(r7.map(String));
+run('buildRegister()');
+assert.strictEqual(ctx.__gas.sheets['Attendance Register'].raw.find((r) => r[2] === 'Ali Dhillon')[8], 'Present', 'a sign-out stamped before the class window does not count');
 ctx.__gas.ssTz = null;
 console.log('time zone ok (sheet on Pacific time, classes in Pakistan time; walking out after class is not absent)');
 
