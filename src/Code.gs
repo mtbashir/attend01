@@ -991,6 +991,8 @@ var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
  * when the page signed the student out for 10 minutes outside the area during class. A session still to come is blank;
  * a session of another class is greyed. A past session that nobody in the class signed in to
  * shows "No data" (the app was not used that day), not Absent, and is left out of the totals. Totals per student are in columns D to H.
+ * Below the students, sign-ins whose roll no and name match nobody in the Roster are listed,
+ * so a misspelt name can be corrected in the Roster.
  * Runs with updateFlags() (every 15 minutes once turned on) and from the Attendance menu.
  * Everything in the tab is rewritten each time, so do not type into it.
  */
@@ -1072,13 +1074,19 @@ function buildRegister() {
    * spreadsheet was set to, so it is only trusted when the sync time is missing; the sync time
    * (column A) is a real instant, and U says how long the record waited on the phone.
    */
-  function eventMin(r) {
+  function eventAt(r) {
+    var shown = timeMin_(r[3]), day = dayText_(r[1], tz);
     if (r.syncedAt instanceof Date) {
       var at = new Date(r.syncedAt.getTime() - (Number(r[20]) || 0) * 60000);
-      return minutes_(Utilities.formatDate(at, tz, 'HH:mm'));
+      var e = { date: Utilities.formatDate(at, tz, 'yyyy-MM-dd'), min: minutes_(Utilities.formatDate(at, tz, 'HH:mm')) };
+      // D and B are exact when they were written in the class time zone (they then agree with the
+      // sync time to within the delay's rounding); otherwise (old rows, written in Pacific time) use the sync time
+      if (shown !== null && day === e.date && Math.abs(shown - e.min) <= 3) e.min = shown;
+      return e;
     }
-    return timeMin_(r[3]);
+    return shown === null ? null : { date: day, min: shown };
   }
+  var unmatched = [], unmatchedSeen = {};
 
   // status[sessionIndex][studentIndex]
   var status = sessions.map(function (t) {
@@ -1094,14 +1102,23 @@ function buildRegister() {
         if (!only) return;                                  // cannot tell which of the day's sessions it ended
         // Walking out after the class has ended is not an absence (the old page did this to
         // students who left with it still open). Only a sign-out during class counts.
-        var end = windowOf_(t).end, m = eventMin(r);
-        if (end !== null && m !== null && m > end) return;
+        // compared as date and time: a phone often sends it when next opened, the following morning
+        var end = windowOf_(t).end, e = eventAt(r);
+        if (end !== null && e && (e.date > t.date || (e.date === t.date && e.min > end))) return;
       }
       var st = whoIs(r);
-      if (!st) return;
+      if (!st) {
+        // a sign-in whose roll no and name match nobody in the Roster: listed under the register
+        var uk = t.date + '|' + t.section + '|' + studentKey_(r[5], r[7]);
+        if (type === 'SIGN_IN' && !unmatchedSeen[uk]) {
+          unmatchedSeen[uk] = true;
+          unmatched.push([t.section, text_(r[5]), text_(r[7]), t.date]);
+        }
+        return;
+      }
       var cur = out[st.i] || { signedIn: false };
       if (type === 'AUTO_LOGOUT_ABSENT') {
-        var at = eventMin(r);
+        var ea = eventAt(r), at = ea ? ea.min : null;
         if (!cur.autoAbsent || (at !== null && at < cur.outAt)) cur.outAt = at;   // the first time they were signed out
         cur.autoAbsent = true; out[st.i] = cur; return;
       }
@@ -1160,6 +1177,23 @@ function buildRegister() {
     values.push([st.section, st.roll, st.name, counts.Present, counts.Fined, counts.Late, counts.Absent, counts.early].concat(cells));
     colors.push(REGISTER_FIXED.map(function () { return '#ffffff'; }).concat(cellColors));
   });
+
+  // Sign-ins that could not be matched to a Roster student (name or roll no typed differently,
+  // or a student missing from the Roster), so they can be put right in the Roster
+  if (unmatched.length) {
+    var width = values[0].length;
+    var pad = function (row) { while (row.length < width) row.push(''); return row; };
+    var grey = function () { var c = []; for (var x = 0; x < width; x++) c.push('#ffffff'); return c; };
+    values.push(pad([]));  colors.push(grey());
+    values.push(pad(['', '', 'Sign-ins not matched to a Roster student (' + unmatched.length + ')', 'Date']));
+    colors.push(grey().map(function (c, x) { return x < 4 ? '#f4f6f8' : c; }));
+    unmatched.sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0; })
+      .forEach(function (u) {
+        var d = u[3].split('-');
+        values.push(pad([u[0], u[1], u[2], +d[2] + '-' + MONTHS[+d[1] - 1] + '-' + d[0]]));
+        colors.push(grey());
+      });
+  }
 
   // ---- write it ----
   var sheet = ss.getSheetByName(CONFIG.REGISTER_SHEET) || ss.insertSheet(CONFIG.REGISTER_SHEET, 0);

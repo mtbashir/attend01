@@ -264,6 +264,21 @@ eq(amna2.slice(3), [1, 0, 1, 0, 0, '', 'No data', 'Present', 'Late', ''], 'unuse
 assert.strictEqual(G2.find((r) => r[2] === 'Dua')[6], 1, 'Dua still has exactly 1 absence');
 console.log('attendance register ok (present / fined / late / absent / never came / left early / future / other class / old Sheet2 rows / unused day)');
 
+// An old Sheet2 sign-out sent the next morning (dated the class day in Pacific time) is not "during class"
+const nextMorning = new Date(at('07:14', dayOf(new Date(D1 + 'T12:00:00+05:00').getTime() + 86400000)));
+ctx.__gas.sheets.Sheet2.raw.push([nextMorning, D1, 'x', '19:14:00', 'AUTO_LOGOUT_ABSENT', '1', 'ECOM-SEP-26', 'Amna', 1, 2, 3, '', 'D-a', '', '', '', '', '', '', '', 0, '', 'old-am']);
+ctx.__gas.sheets.Sheet2.shown.push(ctx.__gas.sheets.Sheet2.raw[ctx.__gas.sheets.Sheet2.raw.length - 1].map(String));
+// a sign-in typed with a name nobody in the Roster has
+ctx.__u = [R('u1', '99', 'Amna Khann', D2, '18:35')];
+run('recordAttendanceBatch(__u)');
+run('buildRegister()');
+const G3 = ctx.__gas.sheets['Attendance Register'].raw;
+assert.strictEqual(G3.find((r) => r[2] === 'Amna')[11], 'Late', 'a sign-out sent the next morning does not make Amna an early leaver');
+const ui = G3.findIndex((r) => /^Sign-ins not matched to a Roster student \(1\)$/.test(r[2]));
+assert.ok(ui > 0, 'unmatched heading below the students');
+eq(G3[ui + 1].slice(0, 4), ['ECOM-SEP-26', '99', 'Amna Khann', fmtD(D2)], 'the unmatched sign-in, as typed');
+console.log('register: next-morning sign-out ignored; unmatched sign-ins listed');
+
 // ---------------------------------------------------------------- 7. spreadsheet set to US Pacific time (the live sheet is)
 // Class times are Pakistan time; sign-ins must be judged in Pakistan time whatever the sheet setting.
 freshSheets();
