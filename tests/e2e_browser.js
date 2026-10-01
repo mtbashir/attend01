@@ -97,6 +97,15 @@ async function waitFor(fn, ms, label) { const t = Date.now(); while (Date.now() 
     console.log('time zone', TZ, 'now', hm(NOW));
     const a = await phone(browser, LUMS);
 
+    // the tiles count one class, never the whole roster (6 students across 4 classes here)
+    assert.strictEqual(await a.p.textContent('#totalStudentsCount'), '–', 'no class chosen: no count');
+    await a.p.fill('#sectionInput', 'ECOM-SEP-26'); await a.p.dispatchEvent('#sectionInput', 'input');
+    assert.strictEqual(await a.p.textContent('#totalStudentsCount'), '3', 'ECOM-SEP-26 has 3 students');
+    assert.ok(/3 students in LUMS ECOM Sep-2026/.test(await a.p.textContent('#rosterHint')), await a.p.textContent('#rosterHint'));
+    await a.p.fill('#rollNoInput', '22L-5002'); await a.p.dispatchEvent('#rollNoInput', 'input');
+    assert.strictEqual(await a.p.textContent('#totalStudentsCount'), '1', 'a roll no from BSBA 7A switches the count to that class');
+    console.log('per-class roster count ok');
+
     let m = await trySignIn(a.p, '22L-5002', 'Ezzan Hussain', 'BSBA 7A');
     assert.ok(/You are 10\d{3} m from class/.test(m), 'FAST class from LUMS is refused: ' + m);
     m = await trySignIn(a.p, 'F-1', 'Future Student', 'FUTURE');

@@ -56,7 +56,7 @@ assert.strictEqual(st('e3'), '+10 mins||Fined|Late||1');
 assert.strictEqual(st('e4'), '+20 mins||||Absent|1');
 assert.strictEqual(st('e5'), '-2 mins|On Time||||2');
 assert.strictEqual(st('e6'), 'No session found|||||', 'no session is never On Time');
-assert.strictEqual(byId.e8[17], 'Absent');
+assert.strictEqual(byId.e8[17], '', 'an automatic sign-out for leaving the area is not an absence (it counts as leaving early)');
 assert.strictEqual(byId.e1[1] + ' ' + byId.e1[2] + ' ' + byId.e1[3], '2026-09-22 Tuesday 09:04:00');
 assert.strictEqual(byId.e9[5], "'=cmd"); assert.strictEqual(byId.e9[7], "'+danger");
 assert.strictEqual(byId.e9[21], 'Device clock ahead by 9 min');

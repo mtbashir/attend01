@@ -570,7 +570,6 @@ function buildRow_(ev, id, timetable, tz) {
 
   var st = { diffText: '', onTime: '', fined: '', late: '', absent: '', sessionNo: '' };
   if (type === 'SIGN_IN') st = evaluateStatus_(pick, minutes_(Utilities.formatDate(when, tz, 'HH:mm')));
-  else if (type === 'AUTO_LOGOUT_ABSENT') st.absent = 'Absent';
 
   // The distance is worked out here from the session's classroom, not taken from the phone
   var dist = num_(ev.distanceMeters);
@@ -986,9 +985,10 @@ var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
  *   Present   signed in on time
  *   Fined     signed in after the fine limit
  *   Late      signed in after the late limit (also fined)
- *   Absent    signed in after the absent limit, signed out for leaving the area, or never signed in
- *             once the session is over
- * " · Left early" is added when the Early Leaver flag is Yes. A session still to come is blank;
+ *   Absent    signed in after the absent limit ("Absent · 25 min late"), or never signed in once
+ *             the session is over ("Absent · no sign-in")
+ * " · Left early" is added when the Early Leaver flag is Yes, and " · Left early (out of area 19:12)"
+ * when the page signed the student out for 10 minutes outside the area during class. A session still to come is blank;
  * a session of another class is greyed. A past session that nobody in the class signed in to
  * shows "No data" (the app was not used that day), not Absent, and is left out of the totals. Totals per student are in columns D to H.
  * Runs with updateFlags() (every 15 minutes once turned on) and from the Attendance menu.
@@ -1100,11 +1100,17 @@ function buildRegister() {
       var st = whoIs(r);
       if (!st) return;
       var cur = out[st.i] || { signedIn: false };
-      if (type === 'AUTO_LOGOUT_ABSENT') { cur.autoAbsent = true; out[st.i] = cur; return; }
+      if (type === 'AUTO_LOGOUT_ABSENT') {
+        var at = eventMin(r);
+        if (!cur.autoAbsent || (at !== null && at < cur.outAt)) cur.outAt = at;   // the first time they were signed out
+        cur.autoAbsent = true; out[st.i] = cur; return;
+      }
       if (cur.signedIn) return;                             // the first sign-in of the session counts
       cur.signedIn = true;
       out.any = true;
       cur.word = text_(r[17]) ? 'Absent' : text_(r[16]) ? 'Late' : text_(r[15]) ? 'Fined' : 'Present';
+      var late = /^\+(\d+)/.exec(text_(r[13]));                // N "+25 mins"
+      cur.why = cur.word === 'Absent' && late ? late[1] + ' min late' : '';
       cur.leftEarly = text_(r[25]) === 'Yes';
       out[st.i] = cur;
     });
@@ -1134,15 +1140,21 @@ function buildRegister() {
       var over = t.date < today || (t.date === today && nowMin > (w.end !== null ? w.end : w.start + CONFIG.DEFAULT_RULES[2]));
       if (over && !status[j].any) { cells.push(NO_DATA); cellColors.push(REGISTER_COLORS.noData); return; }
       var s = status[j][st.i];
-      var word = '';
-      if (s && s.signedIn) word = s.autoAbsent ? 'Absent' : s.word;
-      else if (s && s.autoAbsent) word = 'Absent';
-      else if (over) word = 'Absent';                        // never signed in to a session that is over
+      var word = '', why = '', early = '';
+      if (s && s.signedIn) {
+        word = s.word;
+        why = s.why;
+        // Signed out for 10 minutes outside the area during class: they came, then left (or GPS
+        // drifted indoors). Counted as leaving early, never as absent.
+        if (s.autoAbsent && word !== 'Absent') early = 'Left early' + (s.outAt !== null && s.outAt !== undefined ? ' (out of area ' + hm_(s.outAt) + ')' : '');
+        else if (s.leftEarly && word !== 'Absent') early = 'Left early';
+      } else if (over || (s && s.autoAbsent)) {
+        word = 'Absent'; why = 'no sign-in';                // never signed in to a session that is over
+      }
       if (!word) { cells.push(''); cellColors.push(REGISTER_COLORS.none); return; }
       counts[word]++;
-      var early = s && s.signedIn && s.leftEarly && word !== 'Absent';
       if (early) counts.early++;
-      cells.push(word + (early ? ' · Left early' : ''));
+      cells.push(word + (why ? ' · ' + why : '') + (early ? ' · ' + early : ''));
       cellColors.push(REGISTER_COLORS[word]);
     });
     values.push([st.section, st.roll, st.name, counts.Present, counts.Fined, counts.Late, counts.Absent, counts.early].concat(cells));
