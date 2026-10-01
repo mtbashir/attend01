@@ -31,6 +31,7 @@ var CONFIG = {
   // whatever the spreadsheet's own setting (File > Settings) says. Blank = the spreadsheet's setting.
   TIME_ZONE: 'Asia/Karachi',
   REGISTER_SHEET: 'Attendance Register',   // every student x every session, rebuilt by buildRegister()
+  CORRECTIONS_SHEET: 'Corrections',         // statuses you set by hand; they win over the app's record
   PHOTO_FOLDER: 'Classroom Attendance Photos',
   PHOTO_PUBLIC_LINK: false,     // true = anyone with the link can open student photos (old behaviour)
   DEFAULT_RULES: [5, 7, 15],    // minutes after start: fined after 5, late after 7, absent after 15
@@ -991,6 +992,8 @@ var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
  * when the page signed the student out for 10 minutes outside the area during class. A session still to come is blank;
  * a session of another class is greyed. A past session that nobody in the class signed in to
  * shows "No data" (the app was not used that day), not Absent, and is left out of the totals. Totals per student are in columns D to H.
+ * A row in the Corrections tab (date, section, roll no, status) replaces the app's record for that
+ * student and session: the cell shows e.g. "Present · corrected" and counts in the totals.
  * Below the students, sign-ins whose roll no and name match nobody in the Roster are listed,
  * so a misspelt name can be corrected in the Roster.
  * Runs with updateFlags() (every 15 minutes once turned on) and from the Attendance menu.
@@ -1141,6 +1144,33 @@ function buildRegister() {
     return out;
   });
 
+  // ---- corrections typed into the Corrections tab: they win over the app's record ----
+  var corrMap = {}, corrIssues = [];
+  var bySec = {}, byRollAny = {}, byNameSec = {};
+  students.forEach(function (st) {
+    var sec = text_(st.section).toLowerCase();
+    bySec[sec + '|' + text_(st.roll).toLowerCase()] = st;
+    var rk = text_(st.roll).toLowerCase();
+    byRollAny[rk] = byRollAny.hasOwnProperty(rk) ? null : st;          // a roll no used in two classes needs the section
+    byNameSec[sec + '|' + text_(st.name).toLowerCase()] = st;
+  });
+  readCorrections_(ss, sheetTz).forEach(function (c) {
+    var where = 'Corrections row ' + c.row;
+    if (c.problem) { corrIssues.push([where, c.problem]); return; }
+    var sec = c.section.toLowerCase(), st = null;
+    if (c.roll) st = sec ? bySec[sec + '|' + c.roll.toLowerCase()] : byRollAny[c.roll.toLowerCase()];
+    if (!st && c.name && sec) st = byNameSec[sec + '|' + c.name.toLowerCase()];
+    if (!st) { corrIssues.push([where, 'no student with roll no "' + c.roll + '"' + (c.section ? ' in ' + c.section : '') + (c.name ? ' / name "' + c.name + '"' : '')]); return; }
+    var hit = 0;
+    sessions.forEach(function (t, j) {
+      if (t.date !== c.date || t.section.toLowerCase() !== text_(st.section).toLowerCase()) return;
+      if (c.sessionNo && t.sessionNo !== c.sessionNo) return;
+      corrMap[j + '|' + st.i] = c;
+      hit++;
+    });
+    if (!hit) corrIssues.push([where, 'no session of ' + st.section + ' on ' + c.date + (c.sessionNo ? ' (session ' + c.sessionNo + ')' : '')]);
+  });
+
   // ---- the grid ----
   var nFixed = REGISTER_FIXED.length;
   var head1 = REGISTER_FIXED.map(function (h, c) { return c === 2 ? 'Class' : ''; });
@@ -1160,6 +1190,13 @@ function buildRegister() {
     var cells = [], cellColors = [];
     sessions.forEach(function (t, j) {
       if (t.section.toLowerCase() !== text_(st.section).toLowerCase()) { cells.push(''); cellColors.push(REGISTER_COLORS.other); return; }
+      var fix = corrMap[j + '|' + st.i];
+      if (fix) {                                            // set by hand in the Corrections tab
+        counts[fix.status]++;
+        cells.push(fix.status + ' · corrected');
+        cellColors.push(REGISTER_COLORS[fix.status]);
+        return;
+      }
       var w = windowOf_(t);
       var over = t.date < today || (t.date === today && nowMin > (w.end !== null ? w.end : w.start + CONFIG.DEFAULT_RULES[2]));
       if (over && !status[j].any) { cells.push(NO_DATA); cellColors.push(REGISTER_COLORS.noData); return; }
@@ -1184,6 +1221,17 @@ function buildRegister() {
     values.push([st.section, st.roll, st.name, counts.Present, counts.Fined, counts.Late, counts.Absent, counts.early].concat(cells));
     colors.push(REGISTER_FIXED.map(function () { return '#ffffff'; }).concat(cellColors));
   });
+
+  // Corrections that could not be applied, with the reason, so they can be put right
+  if (corrIssues.length) {
+    var w2 = values[0].length;
+    var pad2 = function (row) { while (row.length < w2) row.push(''); return row; };
+    var white = function () { var c = []; for (var x = 0; x < w2; x++) c.push('#ffffff'); return c; };
+    values.push(pad2([])); colors.push(white());
+    values.push(pad2(['', '', 'Corrections not applied (' + corrIssues.length + ')', 'Why']));
+    colors.push(white().map(function (c, x) { return x < 4 ? '#f4f6f8' : c; }));
+    corrIssues.forEach(function (ci) { values.push(pad2(['', '', ci[0], ci[1]])); colors.push(white()); });
+  }
 
   // Sign-ins that could not be matched to a Roster student (name or roll no typed differently,
   // or a student missing from the Roster), so they can be put right in the Roster
@@ -1216,6 +1264,87 @@ function buildRegister() {
   sheet.setFrozenColumns(3);
   return 'Attendance register: ' + students.length + ' student(s) x ' + sessions.length + ' session(s), updated ' +
          Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm') + '.';
+}
+
+
+/* ================================================================
+   Corrections: statuses set by hand
+   ================================================================ */
+
+var CORRECTION_HEADERS = ['Date', 'Section', 'Roll No', 'Student Name', 'Session No', 'Status', 'Note'];
+var CORRECTION_STATUSES = ['Present', 'Fined', 'Late', 'Absent'];
+var CORRECTION_SHORT = { p: 'Present', f: 'Fined', l: 'Late', a: 'Absent' };
+
+/**
+ * The Corrections tab, created with its headers and a Status drop-down the first time it is needed.
+ * One row per correction: Date, Section, Roll No (or Student Name), optional Session No, Status, Note.
+ */
+function correctionsSheet_(ss) {
+  var sh = ss.getSheetByName(CONFIG.CORRECTIONS_SHEET);
+  if (sh) return sh;
+  sh = ss.insertSheet(CONFIG.CORRECTIONS_SHEET, Math.min(1, ss.getNumSheets()));
+  sh.getRange(1, 1, 1, CORRECTION_HEADERS.length).setValues([CORRECTION_HEADERS]).setFontWeight('bold');
+  sh.setFrozenRows(1);
+  try {
+    var rule = SpreadsheetApp.newDataValidation().requireValueInList(CORRECTION_STATUSES, true).setAllowInvalid(false).build();
+    sh.getRange(2, 6, sh.getMaxRows() - 1, 1).setDataValidation(rule);
+  } catch (e) { /* the drop-down is a convenience; typed statuses are checked when read */ }
+  return sh;
+}
+
+/** Rows of the Corrections tab, columns found by header. Rows that cannot be used carry a problem. */
+function readCorrections_(ss, sheetTz) {
+  var sh = correctionsSheet_(ss);
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  var width = Math.max(sh.getLastColumn(), CORRECTION_HEADERS.length);
+  var range = sh.getRange(1, 1, last, width);
+  var raw = range.getValues(), shown = range.getDisplayValues();
+  var col = {};
+  shown[0].forEach(function (h, c) {
+    var t = text_(h).toLowerCase();
+    if (col.date === undefined && /date/.test(t)) col.date = c;
+    else if (col.session === undefined && /session/.test(t)) col.session = c;
+    else if (col.section === undefined && /section|class|course/.test(t)) col.section = c;
+    else if (col.roll === undefined && /roll/.test(t)) col.roll = c;
+    else if (col.name === undefined && /name/.test(t)) col.name = c;
+    else if (col.status === undefined && /status/.test(t)) col.status = c;
+    else if (col.note === undefined && /note|reason|remark/.test(t)) col.note = c;
+  });
+  var get = function (i, k) { return col[k] === undefined ? '' : text_(shown[i][col[k]]); };
+  var out = [];
+  for (var i = 1; i < raw.length; i++) {
+    if (!get(i, 'date') && !get(i, 'roll') && !get(i, 'name') && !get(i, 'status')) continue;   // blank row
+    var c = { row: i + 1, section: get(i, 'section'), roll: get(i, 'roll'), name: get(i, 'name'),
+              sessionNo: get(i, 'session'), note: get(i, 'note') };
+    c.date = col.date === undefined ? '' : correctionDate_(raw[i][col.date], shown[i][col.date], sheetTz);
+    var st = get(i, 'status').toLowerCase();
+    c.status = CORRECTION_STATUSES.filter(function (x) { return x.toLowerCase() === st; })[0] || CORRECTION_SHORT[st] || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(c.date)) c.problem = 'the date "' + get(i, 'date') + '" cannot be read';
+    else if (!c.status) c.problem = 'the status "' + get(i, 'status') + '" must be Present, Fined, Late or Absent';
+    else if (!c.roll && !(c.name && c.section)) c.problem = 'give a roll no, or a name and a section';
+    out.push(c);
+  }
+  return out;
+}
+
+/** A date cell, or text such as "22-Sep-2026", "2026-09-22" or "22/09/2026", as yyyy-MM-dd. */
+function correctionDate_(raw, shown, tz) {
+  if (raw instanceof Date) return Utilities.formatDate(raw, tz, 'yyyy-MM-dd');
+  var s = text_(shown), m;
+  if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s))) return m[1] + '-' + pad2_(+m[2]) + '-' + pad2_(+m[3]);
+  if ((m = /^(\d{1,2})[- ]([A-Za-z]{3})[A-Za-z]*[- ,]+(\d{4})$/.exec(s))) {
+    var mon = MONTHS.map(function (x) { return x.toLowerCase(); }).indexOf(m[2].toLowerCase());
+    if (mon >= 0) return m[3] + '-' + pad2_(mon + 1) + '-' + pad2_(+m[1]);
+  }
+  if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s))) return m[3] + '-' + pad2_(+m[2]) + '-' + pad2_(+m[1]);   // day first
+  return s;
+}
+
+/** Attendance menu: opens (creating if needed) the Corrections tab. */
+function menuCorrections() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  ss.setActiveSheet(correctionsSheet_(ss));
 }
 
 
@@ -1313,6 +1442,7 @@ function onOpen() {
     .addItem('Update early-leaver and shared-phone flags now', 'menuUpdateFlags')
     .addItem('Update flags automatically every 15 min', 'menuInstallFlagTrigger')
     .addItem('Update the attendance register now', 'menuBuildRegister')
+    .addItem('Open the Corrections tab', 'menuCorrections')
     .addSeparator()
     .addItem('Send Roster changes to phones now', 'menuClearRosterCache')
     .addToUi();

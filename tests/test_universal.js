@@ -278,6 +278,35 @@ const ui = G3.findIndex((r) => /^Sign-ins not matched to a Roster student \(1\)$
 assert.ok(ui > 0, 'unmatched heading below the students');
 eq(G3[ui + 1].slice(0, 4), ['ECOM-SEP-26', '99', 'Amna Khann', fmtD(D2)], 'the unmatched sign-in, as typed');
 console.log('register: next-morning sign-out ignored; unmatched sign-ins listed');
+// ---- Corrections tab: statuses set by hand win over the app's record
+const CT = ctx.__gas.sheets.Corrections;
+assert.ok(CT, 'the register creates the Corrections tab');
+eq(CT.raw[0], ['Date', 'Section', 'Roll No', 'Student Name', 'Session No', 'Status', 'Note']);
+const corr = (r) => { CT.raw.push(r); CT.shown.push(r.map((v) => v instanceof Date ? 'date' : String(v))); };
+corr([fmtD(D2), 'ECOM-SEP-26', '4', '', '', 'Present', 'phone died']);         // Dua: "Absent · no sign-in" -> Present (typed date)
+corr([fmtD(D3), 'ECOM-SEP-26', '2', '', '', 'p', 'app not used that day']);    // Bilal on the unused day ("No data"), shorthand status
+corr([fmtD(D1), '', '1', '', '', 'Present', 'late because of the lift']);     // Amna's Late overridden; section found from the roll no
+corr([fmtD(D1), 'ECOM-SEP-26', '3', '', '', 'Maybe', '']);                    // bad status
+corr([fmtD(D1), 'ECOM-SEP-26', '77', '', '', 'Present', '']);                 // nobody with that roll no
+corr([fmtD(D2), 'BSBA 7A', '22L-1', '', '', 'Present', '']);                  // no BSBA session that day
+run('buildRegister()');
+const G4 = ctx.__gas.sheets['Attendance Register'].raw;
+const rowOf = (n) => G4.find((r) => r[2] === n);
+// ECOM columns here: S0 (D3), S1 (D2), S2 (D1), S3 (tomorrow)
+eq(rowOf('Dua').slice(3, 8), [2, 0, 0, 0, 1], 'Dua: corrected Present + Present · Left early, no absences left');
+assert.strictEqual(rowOf('Dua')[10], 'Present · corrected');
+assert.strictEqual(rowOf('Bilal')[9], 'Present · corrected', 'a correction fills one cell of an unused day');
+assert.strictEqual(rowOf('Amna')[9], 'No data', '... and the others stay No data');
+assert.strictEqual(rowOf('Amna')[11], 'Present · corrected', 'a correction overrides the app\'s Late');
+eq(rowOf('Amna').slice(3, 6), [2, 0, 0], 'Amna: Present 2, Late 0 after the correction');
+const ci = G4.findIndex((r) => /^Corrections not applied \(3\)$/.test(r[2]));
+assert.ok(ci > 0, 'bad corrections are listed: ' + G4.map((r) => r[2]).filter((x) => /Corrections/.test(x)).join(','));
+const why = G4.slice(ci + 1, ci + 4).map((r) => r[2] + ': ' + r[3]).join('\n');
+assert.ok(/row 5: the status "Maybe" must be Present, Fined, Late or Absent/.test(why), why);
+assert.ok(/row 6: no student with roll no "77" in ECOM-SEP-26/.test(why), why);
+assert.ok(/row 7: no session of BSBA 7A on /.test(why), why);
+console.log('corrections ok (absence corrected, unused day, override, shorthand, typed date, bad rows listed)');
+
 
 // ---------------------------------------------------------------- 7. spreadsheet set to US Pacific time (the live sheet is)
 // Class times are Pakistan time; sign-ins must be judged in Pakistan time whatever the sheet setting.
