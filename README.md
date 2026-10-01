@@ -1,0 +1,193 @@
+# Class Sign-In (offline-first student attendance)
+
+A Google Apps Script web app that students open on their phones to sign in to class. It is built for places with little or no mobile signal. The page can be opened from its Apps Script link or hosted on GitHub Pages. Everything is saved on the phone first and uploaded to a Google Sheet when a connection appears, without losing or duplicating records.
+
+## How it works
+
+The student enters a roll number. Name and section fill in from a roster saved on the phone. They take a photo and press **Sign in**. The phone checks that they are within 100 m of the classroom and works out on the spot whether they are on time, fined, late or absent. The record goes into a local queue (IndexedDB, with a localStorage fallback).
+
+While the session is open, the phone checks the student's location every 2 minutes. Leaving the area and coming back are recorded straight away. After 10 minutes outside, the student is signed out and marked absent.
+
+The queue uploads whenever there is signal. Text records go first, in batches of up to 40 per call, and photos follow one per call. Each record carries a unique event ID, so if a reply is lost and the phone sends again, the server skips anything it already wrote. A record is only removed from the phone once the server confirms it.
+
+Other ways the app keeps network use low:
+
+- **Roster:** re-sent only when the Roster tab changes. Otherwise the server answers "not modified" in about 70 bytes.
+- **Photos:** compressed on the phone to at most 800 px (an 8.5 MB test photo became about 157 KB).
+- **Location checks:** only 1 in 5 in-range checks is uploaded.
+
+## The summary at the bottom
+
+The tiles and the list show **today's whole class**, not just the phone in your hand:
+
+- The figures come from the sheet, so every phone shows the same picture. They are rebuilt at most twice a minute, so a class all looking at once causes two reads, not sixty.
+- Only sign-in events are listed, one row per student, the first of the day. Location checks, photos and sign-outs never appear.
+- Present counts students who signed in and were not marked absent. Absent is the rest of the section's roster.
+- A sign-in made on this phone shows immediately, before it has reached the sheet.
+- With no signal, the last figures fetched stay on screen, with this phone's own records added. The line under the heading always says where the figures came from and how old they are, for example "BSCS-A, whole class · updated 3 mins ago (offline)".
+
+Which class it shows follows the student signed in on that phone, or the last one used on it. `SUMMARY_CACHE_SECONDS` in `Code.gs` and `SUMMARY_REFRESH_MS` in `index.html` control how fresh the figures are.
+
+## A whole class signing in at once
+
+Apps Script lets one script hold the write lock at a time, so whatever happens while the lock is held decides how many phones can be served per minute. Three things keep that section short:
+
+- **Duplicate checking comes from the script cache**, not from reading the sheet. A phone marks a record as a resend when it sends it again, and only then is the sheet read.
+- **Photos go to Drive before the lock is taken**, and the file's link is remembered by event id, so a resend never creates a second file.
+- **The next free row is kept in the cache**, so an upload doesn't wait for the previous writer's rows to appear. The sheet's own last row is still checked, outside the lock, in case rows were added by hand.
+
+When the sheet is busy anyway, the server replies "busy" with a wait time instead of failing. The phone keeps the records, shows that it's waiting, and tries again. Phones also spread their uploads over half a minute, so a class doesn't call the server all in the same second.
+
+`tests/load_test.js` measures this. It counts the Sheets, Drive and Cache work an upload causes and turns it into an estimate using the latencies in `tests/mock_gas.js`:
+
+```
+npm run load          # 60 students
+node tests/load_test.js 200
+```
+
+| 60 students, 2 uploads each | Before | After |
+|---|---|---|
+| Cells read from the sheet | 736,264 | 94 |
+| Time holding the lock | 57 s | 15 s |
+| Students served per minute of lock time | ~63 | ~245 |
+
+## Files
+
+| Path | Goes where |
+|---|---|
+| `src/Code.gs` | Apps Script editor, file `Code.gs` |
+| `docs/index.html` | The page. GitHub Pages serves it from `docs/`. For the Apps Script link, paste it into an HTML file named `Index` |
+| `docs/config.json` | The web app link, on one line. The only file to change when the link changes |
+| `docs/sw.js`, `docs/manifest.webmanifest`, `docs/icon-*.png` | GitHub Pages only: keep the page on the phone so it opens with no signal, and let students add it to the home screen |
+| `tests/` | Local tests with Apps Script mocks (Node.js, no dependencies) |
+
+## Spreadsheet setup
+
+**Roster tab**
+
+| Col | Content | Col | Content |
+|---|---|---|---|
+| A | Section | E | Session No |
+| B | Roll No | F | Day |
+| C | Student Name | G | Date |
+| D | (unused) | H | Section |
+| | | I | Start Time |
+| | | J | End Time |
+| | | K | Rules (optional, e.g. `5,7,15`) |
+
+The Rules column holds three numbers of minutes after the start time: fined after the first, late after the second, absent after the third. Leave it blank to use `5,7,15`.
+
+**One tab per class per day**
+
+Records go into a tab named after the date and the class, for example `2026-09-30 BSCS-A`. The tab is created the first time that class meets, with the full headers. Columns A–R are the original layout, plus S Session No, T GPS Accuracy (m), U Upload Delay (mins), V Clock Check and W Event ID.
+
+Change `LOG_SHEET_PATTERN` in `Code.gs` to `'{date}'` for one tab per day with every class together.
+
+The class is named as the **Roster** spells it, so phones sending `bscs-a` and `BSCS-A` still land in the same tab.
+
+**Rows recorded before this change** stay in `Sheet2`. They are still read, so old days still appear in the summary, and nothing new is added there. To split them into per-class tabs, run `splitLegacyLog` once from the editor: it copies rows across, never deletes, and running it twice changes nothing. The old tab is yours to remove once you are happy.
+
+A tab per class per day adds up. A spreadsheet holds 10 million cells in total and slows down after a few hundred tabs, so move a finished term into its own spreadsheet at the end of it.
+
+## Deploying
+
+### 1. The script (always needed)
+
+1. Open the spreadsheet, then go to **Extensions → Apps Script**.
+2. Replace the contents of `Code.gs` with `src/Code.gs`.
+3. Replace the contents of the `Index` HTML file with `docs/index.html`.
+4. Go to **Deploy → Manage deployments** and edit the web app:
+   - **Execute as:** Me
+   - **Who has access:** Anyone
+   - **Version:** New version
+
+   Keeping the same deployment keeps the same `/exec` link. Clicking **New deployment** instead creates a different link, which then has to go into `config.json`.
+5. To check it, open `YOUR_EXEC_LINK?action=roster` in a browser. You should see your class list as JSON. If you see a Google sign-in page instead, "Who has access" is not set to **Anyone**.
+
+### 2a. Students use the Apps Script link
+
+Give students the `/exec` link. Nothing else is needed.
+
+### 2b. Students use GitHub Pages
+
+A page on GitHub cannot use `google.script.run`, so it calls the script through its `/exec` link instead.
+
+1. Put your `/exec` link in `docs/config.json`:
+
+   ```json
+   { "apiUrl": "https://script.google.com/macros/s/AKfycb.../exec" }
+   ```
+
+   Commit and push. This is the only file to change if the link ever changes; phones pick it up on their next visit and remember it, so they keep working offline. If `config.json` is missing, the page falls back to `API_URL` at the top of `docs/index.html`.
+2. On GitHub, go to **Settings → Pages**. Under **Deploy from a branch**, choose `main` and the `/docs` folder.
+3. Give students `https://YOUR-USERNAME.github.io/student-attendance/`, and only ever that address. It never changes, so a new `/exec` link only means editing `config.json`. After the first visit, the page opens even with no signal.
+
+   Ask them to open it once and add it to the home screen (iPhone: Share → Add to Home Screen; Android: ⋮ → Add to Home screen). On iPhone this also stops Safari deleting their saved records after a week without use.
+4. After you push a change, each phone picks it up on its second visit: the first visit loads the new copy in the background.
+
+On a free GitHub account, Pages only works from a **public** repository. The class coordinates and the `/exec` link are then visible to anyone, though any student could already see both in the page source.
+
+### Notes for both
+
+Phones still running the old page keep working. Records they had queued are migrated and uploaded when they load the new version.
+
+If you edit the Roster in bulk (for example by pasting a whole list), run `clearRosterCache` once from the editor so phones get the change immediately. Hand edits clear the cache automatically.
+
+## The class list on a phone's first run
+
+`docs/roster.json` holds a copy of the class list next to the page, so a phone opening it for the first time has the list even if the script is slow or unreachable. The sheet's own copy replaces it as soon as one arrives, so it only has to be roughly right.
+
+To fill it, open `YOUR_EXEC_LINK?action=roster` in a browser, copy what you see, and paste it into `docs/roster.json`, then push. Refresh it when the class list changes a lot; day to day it does not matter, because phones take the live copy from the sheet.
+
+## Offline: what has to be true
+
+The page can only open without signal when it is served from GitHub Pages. The Apps Script `/exec` link is fetched from Google every time, so it can never open offline.
+
+Three things must hold:
+
+1. **The phone opened the page once with signal.** The first visit is what saves it.
+2. **The address ends in a slash:** `https://YOUR-USERNAME.github.io/student-attendance/`. Without the slash the browser treats it as a different place, outside what the saved copy covers, and it will not open offline. Hand out the link with the slash, or let students add it to the home screen, which always uses the right one.
+3. **The saved copy has not been cleared.** iPhones delete it after 7 days without a visit, unless the page was added to the home screen.
+
+The line at the bottom of the page says which state the phone is in: "Saved on this phone: this page opens without signal", or a warning that it is not saved yet.
+
+To check it yourself: open the page, wait for that line to turn green, switch the phone to flight mode, and reload. The page should open and still list your students.
+
+If you would rather not depend on the trailing slash at all, publish from a repository named `YOUR-USERNAME.github.io` instead. The app then lives at `https://YOUR-USERNAME.github.io/`, where the problem cannot arise.
+
+## Settings
+
+Settings are in `CONFIG` at the top of `Code.gs` and at the top of the script in `docs/index.html`.
+
+| Setting | File | Default | Meaning |
+|---|---|---|---|
+| `apiUrl` | config.json | empty | The `/exec` link, used when the page is hosted outside Apps Script |
+| `API_URL` | index.html | empty | Fallback link, used only if `config.json` cannot be read |
+| `CLASS_LAT`, `CLASS_LNG`, `MAX_RADIUS_METERS` | index.html | — , 100 | Classroom location and allowed radius |
+| `PING_UPLOAD_EVERY` | index.html | 5 | Set to `1` to upload every location check |
+| `OUT_OF_RANGE_LOGOUT_MS` | index.html | 10 min | Time outside the area before automatic sign-out |
+| `PHOTO_MAX_EDGE`, `PHOTO_QUALITY` | index.html | 800, 0.6 | Photo compression |
+| `UPLOAD_SPREAD_MS` | index.html | 30 s | How widely phones spread their uploads. Raise it for very large classes |
+| `ROSTER_SPREAD_MS` | index.html | 60 s | Same, for the class-list check |
+| `DEDUP_CACHE_SECONDS` | Code.gs | 6 h | How long written records are remembered without reading the sheet |
+| `BUSY_RETRY_MS`, `LOCK_WAIT_MS` | Code.gs | 15 s, 10 s | How long an upload waits for the sheet, and how long the phone waits after a "busy" reply |
+| `DEFAULT_RULES` | both | 5, 7, 15 | Fined / late / absent thresholds. Keep the two files in step |
+| `PHOTO_PUBLIC_LINK` | Code.gs | false | `true` makes photos viewable by anyone with the link |
+| `LOG_SHEET`, `ROSTER_SHEET` | Code.gs | Sheet2, Roster | Tab names |
+
+## Tests
+
+```
+npm test
+```
+
+This runs the server code against mocked Sheets, Drive, Cache and Lock services. It covers:
+
+- roster parsing and version checks
+- status rules and session choice
+- duplicate-free retries
+- photo upload
+- old-format dates
+- per-record error handling
+- the JSON API used by the GitHub Pages copy
+- the rush path: duplicate checks from the cache, "busy" replies, and a photo uploaded only once
