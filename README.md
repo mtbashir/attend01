@@ -1,12 +1,23 @@
 # Class Sign-In (offline-first student attendance)
 
-A Google Apps Script web app that students open on their phones to sign in to class. It is built for places with little or no mobile signal. The page can be opened from its Apps Script link or hosted on GitHub Pages. Everything is saved on the phone first and uploaded to a Google Sheet when a connection appears, without losing or duplicating records.
+A Google Apps Script web app that students open on their phones to sign in to class. One copy serves every class: each class's timetable, classroom location, radius and timing rules live in the Roster tab of the Google Sheet, so a new class or a changed rule never needs a code change. It is built for places with little or no mobile signal. The page can be opened from its Apps Script link or hosted on GitHub Pages. Everything is saved on the phone first and uploaded to a Google Sheet when a connection appears, without losing or duplicating records.
 
 ## How it works
 
-The student enters a roll number. Name and section fill in from a roster saved on the phone. They take a photo and press **Sign in**. The phone checks that they are within 100 m of the classroom and works out on the spot whether they are on time, fined, late or absent. The record goes into a local queue (IndexedDB, with a localStorage fallback).
+The student enters a roll number. Name and section fill in from a roster saved on the phone (if two students share a roll number, the name is left for them to type). They press **Sign in**. The phone finds that class's session for today and checks:
+
+- **Sign-in is open:** from the Roster's *Sign-in Opens* minutes before the start (30 by default) until the end of class. Outside that, the phone says when sign-in opens or that class has ended.
+- **They are in that class's room:** within the Roster's *Radius* of its *Latitude* / *Longitude*. A class with no location in the Roster cannot be signed in to.
+
+It then works out on the spot whether they are on time, fined, late or absent, and puts the record into a local queue (IndexedDB, with a localStorage fallback). The server works the status and the distance out again when the record arrives; a sign-in that matches no session is recorded as **No session found**, never as On Time.
 
 While the session is open, the phone checks the student's location every 2 minutes. Leaving the area and coming back are recorded straight away. After 10 minutes outside, the student is signed out and marked absent.
+
+**Check-out.** A *Check out* button appears in the last 10 minutes of class (Roster: *Check-out Opens*) and stays until 30 minutes after the end. It needs a location inside the classroom area, like sign-in. Until then the page says when check-out opens.
+
+**Early leavers and shared phones.** Once a class has ended (plus 15 minutes for late uploads), the server fills four columns on each sign-in row: *Checked Out*, *Last Seen In Class*, *Early Leaver* (not seen inside the area in the last 30 minutes of class; Roster: *Early Leaver if Not Seen*) and *Shared Device* (one phone signed in several students that day; flagged, never blocked). A check-out counts as being seen.
+
+A web page cannot read the location while it is closed or the screen is off. So a student who keeps the page closed and does not check out is flagged as an early leaver even if they stayed. Tell students to check out: it is what keeps them off the list.
 
 The queue uploads whenever there is signal. Text records go first, in batches of up to 40 per call, and photos follow one per call. Each record carries a unique event ID, so if a reply is lost and the phone sends again, the server skips anything it already wrote. A record is only removed from the phone once the server confirms it.
 
@@ -65,21 +76,46 @@ node tests/load_test.js 200
 
 **Roster tab**
 
+Columns A to M are read by position, exactly as before:
+
 | Col | Content | Col | Content |
 |---|---|---|---|
 | A | Section | E | Session No |
 | B | Roll No | F | Day |
 | C | Student Name | G | Date |
-| D | (unused) | H | Section |
-| | | I | Start Time |
+| D | (unused, or Class Name) | H | Section |
+| | | I | Start Time (24-hour, e.g. 18:30) |
 | | | J | End Time |
-| | | K | Rules (optional, e.g. `5,7,15`) |
+| | | K, L, M | Fined / late / absent after this many minutes (e.g. 5, 10, 20), or all three in K as `5,10,20` |
 
-The Rules column holds three numbers of minutes after the start time: fined after the first, late after the second, absent after the third. Leave it blank to use `5,7,15`.
+The new columns are found by their header, wherever they are. **Attendance → Add the new Roster columns** adds the missing ones after the last column and fills the defaults into every session row:
+
+| Header | Per session row | Default |
+|---|---|---|
+| Class Name | Name shown to students, e.g. *LUMS ECOM Sep-2026* (optional) | the section |
+| Latitude, Longitude | The classroom. **Required**: a session without them cannot be signed in to | — |
+| Radius (m) | How far from that point counts as in class | 100 |
+| Sign-in Opens (min before start) | | 30 |
+| Check-out Opens (min before end) | | 10 |
+| Early Leaver if Not Seen (min before end) | | 30 |
+
+To find a classroom's latitude and longitude: in Google Maps, press and hold on the room, and copy the two numbers shown.
+
+Give every student their own roll number. Two students sharing one are kept apart by name, but the phone cannot fill in their name for them.
+
+**Attendance menu** (appears when the spreadsheet is opened)
+
+| Item | What it does |
+|---|---|
+| Check the Roster | Lists shared roll numbers, dates and times that cannot be read, sessions with no location, classes with sessions but no students |
+| Add the new Roster columns | Adds the columns above and fills the defaults. Running it again adds nothing |
+| Update early-leaver and shared-phone flags now | Fills the four flag columns for classes that have ended |
+| Update flags automatically every 15 min | Turns on a timer that does the above. Do this once |
+| Send Roster changes to phones now | Phones pick up Roster edits within 5 minutes anyway |
 
 **One tab per class per day**
 
-Records go into a tab named after the date and the class, for example `2026-09-30 BSCS-A`. The tab is created the first time that class meets, with the full headers. Columns A–R are the original layout, plus S Session No, T GPS Accuracy (m), U Upload Delay (mins), V Clock Check and W Event ID.
+Records go into a tab named after the date and the class, for example `2026-09-30 ECOM-SEP-26`. The tab is created the first time that class meets, with the full headers: columns A–R are the original layout, then S Session No, T GPS Accuracy (m), U Upload Delay (mins), V Clock Check, W Event ID, X Checked Out, Y Last Seen In Class, Z Early Leaver, AA Shared Device. Two sessions of the same class on one day share the tab.
 
 Change `LOG_SHEET_PATTERN` in `Code.gs` to `'{date}'` for one tab per day with every class together.
 
@@ -93,7 +129,7 @@ A tab per class per day adds up. A spreadsheet holds 10 million cells in total a
 
 ### 1. The script (always needed)
 
-1. Open the spreadsheet, then go to **Extensions → Apps Script**.
+1. Open the attendance spreadsheet (the one with the Roster tab), then go to **Extensions → Apps Script**.
 2. Replace the contents of `Code.gs` with `src/Code.gs`.
 3. Replace the contents of the `Index` HTML file with `docs/index.html`.
 4. Go to **Deploy → Manage deployments** and edit the web app:
@@ -102,7 +138,8 @@ A tab per class per day adds up. A spreadsheet holds 10 million cells in total a
    - **Version:** New version
 
    Keeping the same deployment keeps the same `/exec` link. Clicking **New deployment** instead creates a different link, which then has to go into `config.json`.
-5. To check it, open `YOUR_EXEC_LINK?action=roster` in a browser. You should see your class list as JSON. If you see a Google sign-in page instead, "Who has access" is not set to **Anyone**.
+5. Reload the spreadsheet. An **Attendance** menu appears. Run **Add the new Roster columns**, fill in Latitude and Longitude, run **Check the Roster** until it is clean, then **Update flags automatically every 15 min** (Google asks for permission the first time).
+6. To check the link, open `YOUR_EXEC_LINK?action=roster` in a browser. You should see your class list as JSON. If you see a Google sign-in page instead, "Who has access" is not set to **Anyone**.
 
 ### 2a. Students use the Apps Script link
 
@@ -119,8 +156,8 @@ A page on GitHub cannot use `google.script.run`, so it calls the script through 
    ```
 
    Commit and push. This is the only file to change if the link ever changes; phones pick it up on their next visit and remember it, so they keep working offline. If `config.json` is missing, the page falls back to `API_URL` at the top of `docs/index.html`.
-2. On GitHub, go to **Settings → Pages**. Under **Deploy from a branch**, choose `main` and the `/docs` folder.
-3. Give students `https://YOUR-USERNAME.github.io/student-attendance/`, and only ever that address. It never changes, so a new `/exec` link only means editing `config.json`. After the first visit, the page opens even with no signal.
+2. On GitHub, open the `attend01` repository and go to **Settings → Pages**. Under **Deploy from a branch**, choose `main` and the `/docs` folder.
+3. Give students `https://mtbashir.github.io/attend01/`, and only ever that address. It never changes, so a new `/exec` link only means editing `config.json`. After the first visit, the page opens even with no signal.
 
    Ask them to open it once and add it to the home screen (iPhone: Share → Add to Home Screen; Android: ⋮ → Add to Home screen). On iPhone this also stops Safari deleting their saved records after a week without use.
 4. After you push a change, each phone picks it up on its second visit: the first visit loads the new copy in the background.
@@ -146,7 +183,7 @@ The page can only open without signal when it is served from GitHub Pages. The A
 Three things must hold:
 
 1. **The phone opened the page once with signal.** The first visit is what saves it.
-2. **The address ends in a slash:** `https://YOUR-USERNAME.github.io/student-attendance/`. Without the slash the browser treats it as a different place, outside what the saved copy covers, and it will not open offline. Hand out the link with the slash, or let students add it to the home screen, which always uses the right one.
+2. **The address ends in a slash:** `https://mtbashir.github.io/attend01/`. Without the slash the browser treats it as a different place, outside what the saved copy covers, and it will not open offline. Hand out the link with the slash, or let students add it to the home screen, which always uses the right one.
 3. **The saved copy has not been cleared.** iPhones delete it after 7 days without a visit, unless the page was added to the home screen.
 
 The line at the bottom of the page says which state the phone is in: "Saved on this phone: this page opens without signal", or a warning that it is not saved yet.
@@ -163,7 +200,10 @@ Settings are in `CONFIG` at the top of `Code.gs` and at the top of the script in
 |---|---|---|---|
 | `apiUrl` | config.json | empty | The `/exec` link, used when the page is hosted outside Apps Script |
 | `API_URL` | index.html | empty | Fallback link, used only if `config.json` cannot be read |
-| `CLASS_LAT`, `CLASS_LNG`, `MAX_RADIUS_METERS` | index.html | — , 100 | Classroom location and allowed radius |
+| Class location, radius, sign-in / check-out / early-leaver minutes | Roster tab | 100 m, 30, 10, 30 | Per session; see Spreadsheet setup |
+| `CLASS_LAT`, `CLASS_LNG`, `MAX_RADIUS_METERS` | index.html | 0, 0, 100 | Fallback location for a session with none in the Roster. 0, 0 = none |
+| `CHECKOUT_GRACE_MIN` | Code.gs | 30 | How long after the end check-out is still accepted |
+| `FLAG_DELAY_MIN`, `FLAG_DAYS_BACK` | Code.gs | 15, 2 | When flags are worked out after a class, and how many days back they are revisited |
 | `PING_UPLOAD_EVERY` | index.html | 5 | Set to `1` to upload every location check |
 | `OUT_OF_RANGE_LOGOUT_MS` | index.html | 10 min | Time outside the area before automatic sign-out |
 | `PHOTO_MAX_EDGE`, `PHOTO_QUALITY` | index.html | 800, 0.6 | Photo compression |
@@ -171,23 +211,20 @@ Settings are in `CONFIG` at the top of `Code.gs` and at the top of the script in
 | `ROSTER_SPREAD_MS` | index.html | 60 s | Same, for the class-list check |
 | `DEDUP_CACHE_SECONDS` | Code.gs | 6 h | How long written records are remembered without reading the sheet |
 | `BUSY_RETRY_MS`, `LOCK_WAIT_MS` | Code.gs | 15 s, 10 s | How long an upload waits for the sheet, and how long the phone waits after a "busy" reply |
-| `DEFAULT_RULES` | both | 5, 7, 15 | Fined / late / absent thresholds. Keep the two files in step |
+| `DEFAULT_RULES` | both | 5, 7, 15 | Fined / late / absent thresholds when K–M are blank. Keep the two files in step |
 | `PHOTO_PUBLIC_LINK` | Code.gs | false | `true` makes photos viewable by anyone with the link |
 | `LOG_SHEET`, `ROSTER_SHEET` | Code.gs | Sheet2, Roster | Tab names |
 
 ## Tests
 
 ```
-npm test
+npm test      # server code against mocked Sheets, Drive, Cache and Lock services
+npm run e2e   # the real page in Chromium against the server code (needs Playwright)
+npm run load  # how many students a minute of the write lock serves
 ```
 
-This runs the server code against mocked Sheets, Drive, Cache and Lock services. It covers:
+`npm test` covers roster parsing and the new Roster columns, status rules, the sign-in window and session choice, distance worked out on the server, "No session found", duplicate-free retries, photo upload, the JSON API, the class rush, the day summary (including dates Sheets has turned into date cells), per-class tabs, check-out / early-leaver / shared-phone flags, shared roll numbers, and the Roster check and setup.
 
-- roster parsing and version checks
-- status rules and session choice
-- duplicate-free retries
-- photo upload
-- old-format dates
-- per-record error handling
-- the JSON API used by the GitHub Pages copy
-- the rush path: duplicate checks from the cache, "busy" replies, and a photo uploaded only once
+`npm run e2e` signs in from a browser: refused on the wrong campus, before sign-in opens and with no location set; a shared roll number; check-out in its window; offline sign-in uploaded later; the iPhone location message.
+
+Not covered by either: a real iPhone or Android phone, and the live Google services. Try one of each before a class relies on it, including a sign-in in flight mode.

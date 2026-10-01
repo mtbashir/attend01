@@ -10,8 +10,14 @@
  *  - The page can be served by Apps Script (google.script.run) or hosted
  *    elsewhere, e.g. GitHub Pages, and reach this script through doGet/doPost.
  *
- * Columns A to R in Sheet2 are unchanged. Five columns are added after them:
- *   S Session No, T GPS Accuracy (m), U Upload Delay (mins), V Clock Check, W Event ID
+ * One app for every class. Everything that differs between classes lives in the
+ * Roster tab, not in this code: the timetable, the classroom location and radius,
+ * when sign-in opens, when check-out appears and the early-leaver rule.
+ *
+ * Columns A to R of the log are the original layout. Added after them:
+ *   S Session No, T GPS Accuracy (m), U Upload Delay (mins), V Clock Check, W Event ID,
+ *   X Checked Out, Y Last Seen In Class, Z Early Leaver, AA Shared Device
+ * X to AA are filled in on sign-in rows by updateFlags() once a class has ended.
  */
 
 var CONFIG = {
@@ -21,9 +27,20 @@ var CONFIG = {
   //   '{date}'            ->  "2026-09-30"          (a tab per day, all classes together)
   LOG_SHEET_PATTERN: '{date} {section}',
   LEGACY_LOG_SHEET: 'Sheet2',   // rows written before this change: still read, never added to
-  PHOTO_FOLDER: 'FAST Attendance Photos',
+  PHOTO_FOLDER: 'Attendance Photos',
   PHOTO_PUBLIC_LINK: false,     // true = anyone with the link can open student photos (old behaviour)
   DEFAULT_RULES: [5, 7, 15],    // minutes after start: fined after 5, late after 7, absent after 15
+
+  // Used only where the Roster cell is blank. "Add the new Roster columns" in the
+  // Attendance menu writes these into the sheet, so they can be changed there.
+  DEFAULT_RADIUS_M: 100,        // classroom radius
+  DEFAULT_OPENS_MIN: 30,        // sign-in opens this many minutes before the start
+  DEFAULT_CHECKOUT_MIN: 10,     // the Check out button appears this many minutes before the end
+  DEFAULT_EARLY_MIN: 30,        // no location in this many last minutes of class = early leaver
+  CHECKOUT_GRACE_MIN: 30,       // check-out is still accepted this long after the end
+  FLAG_DELAY_MIN: 15,           // flags are worked out this long after a class ends, so late uploads count
+  FLAG_DAYS_BACK: 2,            // updateFlags() revisits today and yesterday, for phones that upload late
+  GPS_TOLERANCE_MAX: 30,        // metres of reported GPS error forgiven at the edge of the area
   ROSTER_CACHE_SECONDS: 300,    // roster edits reach phones within 5 min (instantly when edited by hand, see onEdit)
   DEDUP_LOOKBACK_ROWS: 2000,      // only read when a phone says it is retrying
   DEDUP_CACHE_SECONDS: 21600,     // remember written event ids for 6 hours
@@ -39,11 +56,29 @@ var HEADERS = [
   'Roll No', 'Section', 'Student Name', 'Latitude', 'Longitude', 'Distance (m)',
   'Photo Drive Link', 'Device ID', 'Late vs Schedule (Mins)', 'On Time', 'Fined',
   'Late', 'Absent',
-  'Session No', 'GPS Accuracy (m)', 'Upload Delay (mins)', 'Clock Check', 'Event ID'
+  'Session No', 'GPS Accuracy (m)', 'Upload Delay (mins)', 'Clock Check', 'Event ID',
+  'Checked Out', 'Last Seen In Class', 'Early Leaver', 'Shared Device'
 ];
 var FIRST_NEW_COL = 19;               // S
-var COL_EVENT_ID = HEADERS.length;    // W
-var ROSTER_CACHE_KEY = 'att_roster_v2';
+var COL_EVENT_ID = 23;                // W
+var COL_FLAGS = 24;                   // X: first of the four flag columns
+var ROSTER_CACHE_KEY = 'att_roster_v3';
+
+/**
+ * Optional Roster columns, found by their header wherever they are, so adding
+ * them never shifts columns A to M. Column D (unused) can hold Class Name too.
+ */
+var ROSTER_EXTRAS = [
+  { key: 'className',   header: 'Class Name',                                test: /class\s*name/i },
+  { key: 'lat',         header: 'Latitude',                                  test: /^lat(itude)?\b/i },
+  { key: 'lng',         header: 'Longitude',                                 test: /^(longitude|long|lon|lng)\b/i },
+  { key: 'radius',      header: 'Radius (m)',                                test: /radius/i },
+  { key: 'checkoutMin', header: 'Check-out Opens (min before end)',          test: /check.?out/i },
+  { key: 'earlyMin',    header: 'Early Leaver if Not Seen (min before end)', test: /early|leaver/i },
+  { key: 'opensMin',    header: 'Sign-in Opens (min before start)',          test: /sign.?in.*open|open.*before.*start/i }
+];
+var EXTRA_DEFAULTS = { radius: 'DEFAULT_RADIUS_M', opensMin: 'DEFAULT_OPENS_MIN', checkoutMin: 'DEFAULT_CHECKOUT_MIN', earlyMin: 'DEFAULT_EARLY_MIN' };
+var SEEN_TYPES = { SIGN_IN: 1, GPS_PING_2MIN: 1, CHECK_OUT: 1, PHOTO_UPLOAD: 1 };
 
 
 /* ================================================================
@@ -122,9 +157,11 @@ function getRosterData(clientVersion) {
   var res = {
     version: roster.version,
     students: roster.students,          // [[rollNo, name, section], ...]
-    timetable: roster.timetable,
+    timetable: roster.timetable,        // each session carries its own location and windows
+    classNames: roster.classNames,      // { 'section in lower case': 'Class Name' }
     totalStudents: roster.students.length,
     defaultRules: CONFIG.DEFAULT_RULES,
+    checkoutGraceMin: CONFIG.CHECKOUT_GRACE_MIN,
     serverTs: now
   };
 
@@ -149,50 +186,111 @@ function loadRoster_() {
     try { return JSON.parse(hit); } catch (e) { /* rebuild below */ }
   }
 
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var tz = ss.getSpreadsheetTimeZone();
-  var sheet = ss.getSheetByName(CONFIG.ROSTER_SHEET);
-  var students = [];
-  var timetable = [];
-
-  if (sheet && sheet.getLastRow() > 1) {
-    var numCols = Math.max(3, Math.min(13, sheet.getLastColumn()));   // A:M
-    var range = sheet.getRange(2, 1, sheet.getLastRow() - 1, numCols);
-    var raw = range.getValues();
-    var shown = range.getDisplayValues();   // time cells come back as "9:00", not as an 1899 Date
-
-    for (var i = 0; i < raw.length; i++) {
-      var section = text_(shown[i][0]);
-      var roll = text_(shown[i][1]);
-      var name = text_(shown[i][2]);
-      if (roll && name) students.push([roll, name, section]);
-
-      var sessionNo = text_(shown[i][4]);
-      if (sessionNo) {
-        timetable.push({
-          sessionNo: sessionNo,
-          day: text_(shown[i][5]),
-          date: dateKey_(raw[i][6], shown[i][6], tz),
-          section: text_(shown[i][7]),
-          startTime: clock_(shown[i][8]),
-          endTime: clock_(shown[i][9]),
-          // rules in one cell ("5,10,20") or in three columns K, L and M
-          rules: rules_([shown[i][10], shown[i][11], shown[i][12]].join(','))      // optional "5,7,15" in column K; blank = defaults
-        });
-      }
-    }
-  }
-
-  var sectionNames = {};
-  students.forEach(function (st) { if (st[2]) sectionNames[st[2].toLowerCase()] = st[2]; });
-  timetable.forEach(function (t) { if (t.section) sectionNames[t.section.toLowerCase()] = t.section; });
-
-  var body = { students: students, timetable: timetable, sectionNames: sectionNames };
-  body.version = hash_(JSON.stringify(body) + '|' + CONFIG.DEFAULT_RULES.join(','));
+  var p = parseRoster_();
+  var body = { students: p.students, timetable: p.timetable, sectionNames: p.sectionNames, classNames: p.classNames };
+  body.version = hash_(JSON.stringify(body) + '|' + CONFIG.DEFAULT_RULES.join(',') + '|' + CONFIG.CHECKOUT_GRACE_MIN);
   try {
     cache.put(ROSTER_CACHE_KEY, JSON.stringify(body), CONFIG.ROSTER_CACHE_SECONDS);
   } catch (e) { /* roster too large for the cache (>100 KB): read the sheet each time */ }
   return body;
+}
+
+/**
+ * Reads the Roster tab. Columns A to M are read by position, as before:
+ *   A Section, B Roll No, C Student Name, D (unused), E Session No, F Day, G Date, H Section,
+ *   I Start Time, J End Time, K-M rules (fined / late / absent minutes)
+ * The optional columns in ROSTER_EXTRAS are found by their header.
+ * Also returns the problems it noticed, for checkRoster().
+ */
+function parseRoster_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tz = ss.getSpreadsheetTimeZone();
+  var sheet = ss.getSheetByName(CONFIG.ROSTER_SHEET);
+  var out = { students: [], timetable: [], sectionNames: {}, classNames: {}, issues: [], missing: [], hasSheet: !!sheet };
+  if (!sheet || sheet.getLastRow() < 1) return out;
+
+  var numCols = Math.max(13, sheet.getLastColumn());
+  var range = sheet.getRange(1, 1, sheet.getLastRow(), numCols);
+  var raw = range.getValues();
+  var shown = range.getDisplayValues();   // time cells come back as "9:00", not as an 1899 Date
+
+  var col = rosterExtraCols_(shown[0]);
+  ROSTER_EXTRAS.forEach(function (x) { if (col[x.key] === undefined) out.missing.push(x.header); });
+  var cell = function (i, key) { return col[key] === undefined ? '' : text_(shown[i][col[key]]); };
+  var num = function (i, key) {
+    var s = cell(i, key);
+    if (!s) return null;
+    var n = Number(String(s).replace(/,/g, ''));
+    return isFinite(n) ? n : NaN;
+  };
+  var orDefault = function (n, key) { return (n === null || isNaN(n)) ? CONFIG[EXTRA_DEFAULTS[key]] : n; };
+
+  for (var i = 1; i < raw.length; i++) {
+    var rowNo = i + 1;
+    var section = text_(shown[i][0]);
+    var roll = text_(shown[i][1]);
+    var name = text_(shown[i][2]);
+    if (roll && name) out.students.push([roll, name, section]);
+
+    var sessionNo = text_(shown[i][4]);
+    var className = cell(i, 'className');
+    if (!sessionNo) {
+      if (className && section) out.classNames[section.toLowerCase()] = className;
+      continue;
+    }
+
+    var t = {
+      sessionNo: sessionNo,
+      day: text_(shown[i][5]),
+      date: dateKey_(raw[i][6], shown[i][6], tz),
+      section: text_(shown[i][7]),
+      startTime: clock_(shown[i][8]),
+      endTime: clock_(shown[i][9]),
+      // rules in one cell ("5,10,20") or in three columns K, L and M; blank = defaults
+      rules: rules_([shown[i][10], shown[i][11], shown[i][12]].join(',')),
+      lat: num(i, 'lat'),
+      lng: num(i, 'lng'),
+      radius: orDefault(num(i, 'radius'), 'radius'),
+      opensMin: orDefault(num(i, 'opensMin'), 'opensMin'),
+      checkoutMin: orDefault(num(i, 'checkoutMin'), 'checkoutMin'),
+      earlyMin: orDefault(num(i, 'earlyMin'), 'earlyMin')
+    };
+    if (className && t.section) out.classNames[t.section.toLowerCase()] = className;
+
+    var where = 'Roster row ' + rowNo + ' (session ' + sessionNo + (t.section ? ', ' + t.section : '') + ')';
+    if (!t.section) out.issues.push(where + ': no section in column H.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date)) out.issues.push(where + ': the date "' + text_(shown[i][6]) + '" cannot be read.');
+    if (!t.startTime) out.issues.push(where + ': the start time "' + text_(shown[i][8]) + '" cannot be read. Write it like 18:30.');
+    if (!t.endTime) out.issues.push(where + ': the end time "' + text_(shown[i][9]) + '" cannot be read. Without it there is no check-out and no early-leaver check.');
+    if (t.startTime && t.endTime && minutes_(t.endTime) <= minutes_(t.startTime)) out.issues.push(where + ': the class ends before it starts.');
+    if ([shown[i][10], shown[i][11], shown[i][12]].join('').trim() && !t.rules) {
+      out.issues.push(where + ': the fined / late / absent minutes must be three numbers, smallest first. The defaults ' + CONFIG.DEFAULT_RULES.join(', ') + ' are used.');
+    }
+    if (t.lat === null || t.lng === null) out.issues.push(where + ': no classroom Latitude / Longitude, so nobody can sign in to it.');
+    else if (isNaN(t.lat) || isNaN(t.lng) || Math.abs(t.lat) > 90 || Math.abs(t.lng) > 180) out.issues.push(where + ': the Latitude / Longitude cannot be read.');
+    if (isNaN(t.lat)) t.lat = null;
+    if (isNaN(t.lng)) t.lng = null;
+    out.timetable.push(t);
+  }
+
+  out.students.forEach(function (st) { if (st[2]) out.sectionNames[st[2].toLowerCase()] = st[2]; });
+  out.timetable.forEach(function (t) { if (t.section) out.sectionNames[t.section.toLowerCase()] = t.section; });
+  return out;
+}
+
+/** Column index of each optional Roster column, from the header row. A to C and E to M are never taken. */
+function rosterExtraCols_(headerRow) {
+  var col = {};
+  for (var c = 0; c < headerRow.length; c++) {
+    if (c < 3 || (c > 3 && c < 13)) continue;
+    var h = text_(headerRow[c]);
+    if (!h) continue;
+    for (var k = 0; k < ROSTER_EXTRAS.length; k++) {
+      var x = ROSTER_EXTRAS[k];
+      if (col[x.key] === undefined && x.test.test(h)) { col[x.key] = c; break; }
+    }
+  }
+  return col;
 }
 
 /** Run this by hand after bulk-editing the Roster if you want phones to see it immediately. */
@@ -387,9 +485,19 @@ function buildRow_(ev, id, timetable, tz) {
   var photo = type === 'PHOTO_UPLOAD' ? 'PROCESSING' : 'NO_PHOTO';
   if (ev.imageBase64) photo = savePhoto_(ev, ts);
 
+  var dateKey = Utilities.formatDate(when, tz, 'yyyy-MM-dd');
+  var pick = pickSession_(timetable, ev.section, dateKey, minutes_(Utilities.formatDate(when, tz, 'HH:mm')));
+
   var st = { diffText: '', onTime: '', fined: '', late: '', absent: '', sessionNo: '' };
-  if (type === 'SIGN_IN') st = evaluateStatus_(ev.section, ts, timetable, tz);
+  if (type === 'SIGN_IN') st = evaluateStatus_(pick, minutes_(Utilities.formatDate(when, tz, 'HH:mm')));
   else if (type === 'AUTO_LOGOUT_ABSENT') st.absent = 'Absent';
+
+  // The distance is worked out here from the session's classroom, not taken from the phone
+  var dist = num_(ev.distanceMeters);
+  var lat = num_(ev.lat), lng = num_(ev.lng);
+  if (pick && pick.s.lat !== null && pick.s.lng !== null && lat !== '' && lng !== '') {
+    dist = distanceM_(lat, lng, pick.s.lat, pick.s.lng);
+  }
 
   return [
     new Date(now),                                   // A Server Sync Time
@@ -400,9 +508,9 @@ function buildRow_(ev, id, timetable, tz) {
     cell_(ev.rollNo, 60),                            // F Roll No
     cell_(ev.section, 60),                           // G Section
     cell_(ev.name, 120),                             // H Student Name
-    num_(ev.lat),                                    // I Latitude
-    num_(ev.lng),                                    // J Longitude
-    num_(ev.distanceMeters),                         // K Distance (m)
+    lat,                                             // I Latitude
+    lng,                                             // J Longitude
+    dist,                                            // K Distance (m)
     photo,                                           // L Photo Drive Link
     cell_(ev.deviceId, 80),                          // M Device ID
     st.diffText,                                     // N Late vs Schedule (Mins)
@@ -414,7 +522,8 @@ function buildRow_(ev, id, timetable, tz) {
     num_(ev.accuracy),                               // T GPS Accuracy (m)
     Math.max(0, Math.round((now - ts) / 60000)),     // U Upload Delay (mins)
     clockCheck_(ev, ts, now),                        // V Clock Check
-    id                                               // W Event ID
+    id,                                              // W Event ID
+    '', '', '', ''                                   // X-AA flags, filled in by updateFlags()
   ];
 }
 
@@ -442,19 +551,23 @@ function clockCheck_(ev, ts, now) {
    Schedule evaluation (same rules as evaluateLocal() in Index.html)
    ================================================================ */
 
-function evaluateStatus_(section, ts, timetable, tz) {
+var NO_SESSION = 'No session found';
+
+/**
+ * A sign-in with no session in the Roster for that class and day is recorded as
+ * "No session found", never as On Time, so a Roster mistake shows up in the sheet.
+ */
+function evaluateStatus_(pick, nowMin) {
   var r = { diffText: '', onTime: '', fined: '', late: '', absent: '', sessionNo: '' };
-  var when = new Date(ts);
-  var dateKey = Utilities.formatDate(when, tz, 'yyyy-MM-dd');
-  var nowMin = minutes_(Utilities.formatDate(when, tz, 'HH:mm'));
+  if (!pick) { r.diffText = NO_SESSION; return r; }
 
-  var s = pickSession_(timetable, section, dateKey, nowMin);
-  if (!s) { r.onTime = 'On Time'; return r; }
-
+  var s = pick.s;
   var rules = s.rules || CONFIG.DEFAULT_RULES;
   var diff = nowMin - minutes_(s.startTime);
   r.sessionNo = s.sessionNo;
   r.diffText = (diff > 0 ? '+' : '') + diff + ' mins';
+  // the phone refuses these; one can still arrive from a phone with an old timetable
+  if (!pick.inWindow) r.diffText += diff < 0 ? ' (before sign-in opened)' : ' (after class ended)';
 
   if (diff <= rules[0]) r.onTime = 'On Time';
   else if (diff <= rules[1]) r.fined = 'Fined';
@@ -463,19 +576,40 @@ function evaluateStatus_(section, ts, timetable, tz) {
   return r;
 }
 
-/** When a section has more than one session in a day, use the one whose start is closest. */
+/** Minutes of the day when sign-in opens and when the session ends (start + 24 h if no end time). */
+function windowOf_(s) {
+  var start = minutes_(s.startTime), end = minutes_(s.endTime);
+  var opens = isFinite(s.opensMin) ? s.opensMin : CONFIG.DEFAULT_OPENS_MIN;
+  return { open: start - opens, start: start, end: end, close: end !== null ? end : start + 24 * 60 };
+}
+
+/**
+ * The session an event belongs to: one whose sign-in window (opening time to end) holds
+ * the event, else the closest start that day. Several in the window: the closest start.
+ * Returns { s, inWindow } or null when the class has no session that day.
+ */
 function pickSession_(timetable, section, dateKey, nowMin) {
   var want = text_(section).toLowerCase();
-  var best = null, bestGap = Infinity;
+  var best = null, bestGap = Infinity, bestIn = false;
   for (var i = 0; i < timetable.length; i++) {
     var s = timetable[i];
     if (s.date !== dateKey || s.section.toLowerCase() !== want) continue;
-    var start = minutes_(s.startTime);
-    if (start === null) continue;
-    var gap = Math.abs(nowMin - start);
-    if (gap < bestGap) { best = s; bestGap = gap; }
+    var w = windowOf_(s);
+    if (w.start === null) continue;
+    var inside = nowMin >= w.open && nowMin <= w.close;
+    var gap = Math.abs(nowMin - w.start);
+    if ((inside && !bestIn) || (inside === bestIn && gap < bestGap)) { best = s; bestGap = gap; bestIn = inside; }
   }
-  return best;
+  return best ? { s: best, inWindow: bestIn } : null;
+}
+
+/** Metres between two points. */
+function distanceM_(lat1, lng1, lat2, lng2) {
+  var R = 6371000, toRad = Math.PI / 180;
+  var dLat = (lat2 - lat1) * toRad, dLon = (lng2 - lng1) * toRad;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
 
@@ -565,15 +699,16 @@ function getDaySummary(section, date) {
     return cached;
   }
 
-  var out = { date: day, section: text_(section), students: [], counts: { signedIn: 0, onTime: 0, fined: 0, late: 0, absent: 0 }, serverTs: Date.now() };
+  var out = { date: day, section: text_(section), students: [], counts: { signedIn: 0, onTime: 0, fined: 0, late: 0, absent: 0, noSession: 0 }, serverTs: Date.now() };
   var byRoll = {};
 
   // That day's own tabs hold only that day, so they are read whole.
+  // Display values: Sheets turns "2026-09-30" and "18:45:00" into a date and a time when they are written.
   var sheets = logSheetsFor_(ss, day, text_(section));
   sheets.forEach(function (sheet) {
     var last = sheet.getLastRow();
     if (last < 2) return;
-    var vals = sheet.getRange(2, 2, Math.min(last - 1, CONFIG.SUMMARY_MAX_ROWS), 17).getValues();   // B..R
+    var vals = sheet.getRange(2, 2, Math.min(last - 1, CONFIG.SUMMARY_MAX_ROWS), 17).getDisplayValues();   // B..R
     collectSignIns_(vals, day, sec, byRoll);
   });
 
@@ -585,7 +720,7 @@ function getDaySummary(section, date) {
     // rows there are in time order, so read from the bottom and stop once the day changes
     for (var end = last2; end >= 2 && scanned < CONFIG.SUMMARY_MAX_ROWS && !stop; end -= CHUNK) {
       var start = Math.max(2, end - CHUNK + 1);
-      var chunk = legacy.getRange(start, 2, end - start + 1, 17).getValues();
+      var chunk = legacy.getRange(start, 2, end - start + 1, 17).getDisplayValues();
       scanned += chunk.length;
       stop = collectSignIns_(chunk, day, sec, byRoll);
     }
@@ -598,6 +733,7 @@ function getDaySummary(section, date) {
     if (st[4] === 'Absent') out.counts.absent++;
     else if (st[4] === 'Late') { out.counts.late++; out.counts.fined++; }
     else if (st[4] === 'Fined') out.counts.fined++;
+    else if (st[4] === 'No session') out.counts.noSession++;
     else out.counts.onTime++;
   });
 
@@ -612,18 +748,256 @@ function getDaySummary(section, date) {
 function collectSignIns_(vals, day, sec, byRoll) {
   for (var i = vals.length - 1; i >= 0; i--) {
     var r = vals[i];
-    var d = text_(r[0]);                                   // B Device Date
+    var d = dayText_(r[0]);                                // B Device Date
     if (!d) continue;
     if (d < day) return true;
     if (d > day || text_(r[3]) !== 'SIGN_IN') continue;    // E Event Type
     var rollNo = text_(r[4]), rowSec = text_(r[5]);        // F Roll No, G Section
     if (sec && rowSec.toLowerCase() !== sec) continue;
-    // scanning upwards, so a later assignment is an earlier sign-in: the first of the day wins
-    byRoll[rollNo.toLowerCase()] = [text_(r[2]), rollNo, text_(r[6]), rowSec,
-                                    r[16] ? 'Absent' : r[15] ? 'Late' : r[14] ? 'Fined' : 'On Time'];
+    // scanning upwards, so a later assignment is an earlier sign-in: the first of the day wins.
+    // Roll no and name together: two students sharing a roll no are still two students.
+    byRoll[studentKey_(rollNo, r[6])] = [text_(r[2]), rollNo, text_(r[6]), rowSec,
+                                    r[16] ? 'Absent' : r[15] ? 'Late' : r[14] ? 'Fined' :
+                                    text_(r[12]) === NO_SESSION ? 'No session' : 'On Time'];
   }
   return false;
 }
+
+/* ================================================================
+   After class: check-out, early leavers, shared phones
+   ================================================================ */
+
+/**
+ * Fills X to AA on each sign-in row once its class has ended (plus FLAG_DELAY_MIN):
+ *   X Checked Out         "Yes 20:25" or "No"
+ *   Y Last Seen In Class  last time the phone reported a location inside the classroom area
+ *   Z Early Leaver        "Yes" when the student was not seen inside in the last N minutes
+ *                         (Roster column "Early Leaver if Not Seen"); blank for absentees
+ *   AA Shared Device      "Yes: N students" when one phone signed in several students that day
+ * Runs every 15 minutes once "Update flags automatically" is chosen in the Attendance menu,
+ * and looks back FLAG_DAYS_BACK days, so records uploaded late still count. Safe to run any time.
+ */
+function updateFlags() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tz = ss.getSpreadsheetTimeZone();
+  var timetable = loadRoster_().timetable;
+  var now = Date.now();
+  var today = Utilities.formatDate(new Date(now), tz, 'yyyy-MM-dd');
+  var nowMin = minutes_(Utilities.formatDate(new Date(now), tz, 'HH:mm'));
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(CONFIG.LOCK_WAIT_MS)) return 'The sheet is busy with uploads. Nothing changed; try again in a minute.';
+  var written = 0, tabsDone = 0;
+  try {
+    for (var d = 0; d < CONFIG.FLAG_DAYS_BACK; d++) {
+      var day = Utilities.formatDate(new Date(now - d * 86400000), tz, 'yyyy-MM-dd');
+      var tabs = logSheetsFor_(ss, day, '').map(function (sheet) {
+        ensureHeaders_(sheet);
+        var last = sheet.getLastRow();
+        return { sheet: sheet, vals: last < 2 ? [] : sheet.getRange(2, 1, last - 1, HEADERS.length).getDisplayValues() };
+      });
+
+      // which students each phone signed in that day, across every class
+      var byDevice = {};
+      tabs.forEach(function (t) {
+        t.vals.forEach(function (r) {
+          var dev = text_(r[12]);
+          if (text_(r[4]) !== 'SIGN_IN' || !dev) return;
+          (byDevice[dev] = byDevice[dev] || {})[studentKey_(r[5], r[7])] = 1;
+        });
+      });
+
+      tabs.forEach(function (t) {
+        if (!t.vals.length) return;
+        var flags = flagsFor_(t.vals, timetable, day, day === today ? nowMin : 24 * 60 + CONFIG.FLAG_DELAY_MIN, byDevice);
+        if (!flags.changed) return;
+        t.sheet.getRange(2, COL_FLAGS, flags.rows.length, 4).setValues(flags.rows);
+        written += flags.changed; tabsDone++;
+      });
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return 'Updated ' + written + ' sign-in row(s) in ' + tabsDone + ' tab(s).';
+}
+
+/** Works out X to AA for one tab's rows (display values, columns A..AA). */
+function flagsFor_(vals, timetable, day, nowMin, byDevice) {
+  var events = {};   // student -> [{ t, type, dist, acc }]
+  vals.forEach(function (r) {
+    var t = timeMin_(r[3]);
+    if (t === null) return;
+    (events[studentKey_(r[5], r[7])] = events[studentKey_(r[5], r[7])] || []).push({
+      t: t, type: text_(r[4]), dist: Number(r[10]), acc: Number(r[19]) || 0
+    });
+  });
+
+  var firstSignIn = {}, changed = 0;
+  var rows = vals.map(function (r) {
+    var keep = [r[23], r[24], r[25], r[26]];
+    if (text_(r[4]) !== 'SIGN_IN') return keep;
+    var who = studentKey_(r[5], r[7]);
+    var sessionNo = text_(r[18]);
+    var seenKey = who + '#' + sessionNo;
+    if (firstSignIn[seenKey]) return keep;              // a repeat sign-in: the first one carries the flags
+    firstSignIn[seenKey] = true;
+
+    var devs = byDevice[text_(r[12])];
+    var n = devs ? Object.keys(devs).length : 0;
+    var shared = n > 1 ? 'Yes: ' + n + ' students' : '';
+
+    var s = null;
+    for (var i = 0; i < timetable.length && sessionNo; i++) {
+      var c = timetable[i];
+      if (c.date === day && c.sessionNo === sessionNo && c.section.toLowerCase() === text_(r[6]).toLowerCase()) { s = c; break; }
+    }
+    var out = ['', '', '', shared];
+    var w = s ? windowOf_(s) : null;
+    if (w && w.end !== null && nowMin >= w.end + CONFIG.FLAG_DELAY_MIN) {
+      var until = w.end + CONFIG.CHECKOUT_GRACE_MIN;
+      var limit = (isFinite(s.radius) ? s.radius : CONFIG.DEFAULT_RADIUS_M);
+      var checkout = null, lastSeen = null;
+      (events[who] || []).forEach(function (e) {
+        if (e.t < w.open || e.t > until || !SEEN_TYPES[e.type]) return;
+        // inside the area, allowing for reported GPS error as the phone does; no location set: any report counts
+        var inside = (s.lat === null || s.lng === null) ||
+                     (isFinite(e.dist) && e.dist - Math.min(e.acc, CONFIG.GPS_TOLERANCE_MAX) <= limit);
+        if (!inside) return;
+        if (e.type === 'CHECK_OUT' && (checkout === null || e.t > checkout)) checkout = e.t;
+        if (lastSeen === null || e.t > lastSeen) lastSeen = e.t;
+      });
+      var absent = !!text_(r[17]);
+      var early = isFinite(s.earlyMin) ? s.earlyMin : CONFIG.DEFAULT_EARLY_MIN;
+      out[0] = checkout !== null ? 'Yes ' + hm_(checkout) : 'No';
+      out[1] = lastSeen !== null ? hm_(lastSeen) : '';
+      out[2] = absent ? '' : (lastSeen === null || lastSeen < w.end - early ? 'Yes' : 'No');
+    }
+    if (out.join('|') !== keep.map(text_).join('|')) changed++;
+    return out;
+  });
+  return { rows: rows, changed: changed };
+}
+
+/** Attendance menu: turns on updateFlags() every 15 minutes (once is enough; running it again does no harm). */
+function installFlagTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'updateFlags') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('updateFlags').timeBased().everyMinutes(15).create();
+  return 'Early-leaver and shared-phone flags will now update every 15 minutes.';
+}
+
+
+/* ================================================================
+   Roster tools and the Attendance menu
+   ================================================================ */
+
+/**
+ * Lists what is wrong with the Roster: shared roll numbers, dates and times that cannot be
+ * read, sessions with no classroom location, classes with sessions but no students.
+ * Returns a list of plain sentences (empty when all is well).
+ */
+function checkRoster() {
+  var p = parseRoster_();
+  if (!p.hasSheet) return ['There is no tab called "' + CONFIG.ROSTER_SHEET + '".'];
+  var out = [];
+  if (p.missing.length) {
+    out.push('These Roster columns are missing: ' + p.missing.join(', ') + '. Use Attendance > Add the new Roster columns.');
+  }
+
+  var byRoll = {};
+  p.students.forEach(function (st) {
+    var k = (st[2] + '|' + st[0]).toLowerCase();
+    (byRoll[k] = byRoll[k] || { roll: st[0], section: st[2], names: [] }).names.push(st[1]);
+  });
+  Object.keys(byRoll).forEach(function (k) {
+    var g = byRoll[k];
+    if (g.names.length > 1) {
+      out.push('Roll no ' + g.roll + (g.section ? ' in ' + g.section : '') + ' is shared by ' + g.names.length +
+               ' students (' + g.names.slice(0, 4).join(', ') + (g.names.length > 4 ? ', …' : '') +
+               '). Give each student their own roll no.');
+    }
+  });
+
+  out = out.concat(p.issues);
+
+  var withStudents = {}, withSessions = {};
+  p.students.forEach(function (st) { if (st[2]) withStudents[st[2].toLowerCase()] = st[2]; });
+  p.timetable.forEach(function (t) { if (t.section) withSessions[t.section.toLowerCase()] = t.section; });
+  Object.keys(withSessions).forEach(function (k) {
+    if (!withStudents[k]) out.push('Class ' + withSessions[k] + ' has sessions but no students in columns A to C.');
+  });
+  Object.keys(withStudents).forEach(function (k) {
+    if (!withSessions[k]) out.push('Class ' + withStudents[k] + ' has students but no sessions in columns E to M.');
+  });
+  return out;
+}
+
+/**
+ * Adds the optional Roster columns that are missing, after the last column, and fills the
+ * defaults (radius, sign-in, check-out and early-leaver minutes) into every session row
+ * where they are blank. Latitude, Longitude and Class Name are left for you to fill in.
+ */
+function setupRosterColumns() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(CONFIG.ROSTER_SHEET);
+  if (!sheet) return 'There is no tab called "' + CONFIG.ROSTER_SHEET + '".';
+  var lastCol = Math.max(13, sheet.getLastColumn());
+  var header = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  var col = rosterExtraCols_(header);
+  var added = [];
+  ROSTER_EXTRAS.forEach(function (x) {
+    if (col[x.key] !== undefined) return;
+    lastCol++;
+    if (sheet.getMaxColumns() < lastCol) sheet.insertColumnsAfter(sheet.getMaxColumns(), lastCol - sheet.getMaxColumns());
+    sheet.getRange(1, lastCol).setValue(x.header).setFontWeight('bold');
+    col[x.key] = lastCol - 1;
+    added.push(x.header);
+  });
+
+  var filled = 0, last = sheet.getLastRow();
+  if (last > 1) {
+    var sessions = sheet.getRange(2, 5, last - 1, 1).getDisplayValues();   // E Session No
+    Object.keys(EXTRA_DEFAULTS).forEach(function (key) {
+      var rng = sheet.getRange(2, col[key] + 1, last - 1, 1);
+      var vals = rng.getDisplayValues(), change = false;
+      for (var i = 0; i < vals.length; i++) {
+        if (text_(sessions[i][0]) && !text_(vals[i][0])) { vals[i][0] = CONFIG[EXTRA_DEFAULTS[key]]; change = true; filled++; }
+      }
+      if (change) rng.setValues(vals);
+    });
+  }
+  clearRosterCache();
+  return (added.length ? 'Added: ' + added.join(', ') + '. ' : 'All the columns were already there. ') +
+         (filled ? 'Filled ' + filled + ' blank setting(s) with the defaults. ' : '') +
+         'Now fill in Latitude and Longitude for every session (and Class Name if you like).';
+}
+
+/** Adds the Attendance menu to the spreadsheet. */
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Attendance')
+    .addItem('Check the Roster', 'menuCheckRoster')
+    .addItem('Add the new Roster columns', 'menuSetupRoster')
+    .addSeparator()
+    .addItem('Update early-leaver and shared-phone flags now', 'menuUpdateFlags')
+    .addItem('Update flags automatically every 15 min', 'menuInstallFlagTrigger')
+    .addSeparator()
+    .addItem('Send Roster changes to phones now', 'menuClearRosterCache')
+    .addToUi();
+}
+
+function menuCheckRoster() {
+  var problems = checkRoster();
+  SpreadsheetApp.getUi().alert(problems.length
+    ? 'Roster: ' + problems.length + ' thing(s) to fix\n\n• ' + problems.slice(0, 30).join('\n• ') +
+      (problems.length > 30 ? '\n… and ' + (problems.length - 30) + ' more.' : '')
+    : 'The Roster looks fine.');
+}
+function menuSetupRoster() { SpreadsheetApp.getUi().alert(setupRosterColumns()); }
+function menuUpdateFlags() { SpreadsheetApp.getUi().alert(updateFlags()); }
+function menuInstallFlagTrigger() { SpreadsheetApp.getUi().alert(installFlagTrigger()); }
+function menuClearRosterCache() { clearRosterCache(); SpreadsheetApp.getUi().alert('Phones will get the Roster the next time they open the page with signal.'); }
+
 
 /* ================================================================
    Sheet and Drive helpers
@@ -653,9 +1027,11 @@ function logSheet_(ss, name) {
   var sheet = ss.getSheetByName(name);
   if (!sheet) {
     sheet = ss.insertSheet(name, ss.getNumSheets());
+    var cols = sheet.getMaxColumns();   // a new tab has 26 columns; the log needs more
+    if (cols < HEADERS.length) sheet.insertColumnsAfter(cols, HEADERS.length - cols);
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]).setFontWeight('bold');
     sheet.setFrozenRows(1);
-    CacheService.getScriptCache().put('att_headers_' + name, '1', 21600);
+    CacheService.getScriptCache().put(HEADER_CACHE_PREFIX + name, '1', 21600);
   } else {
     ensureHeaders_(sheet, name);
   }
@@ -679,9 +1055,11 @@ function logSheetsFor_(ss, date, section) {
   return out;
 }
 
+var HEADER_CACHE_PREFIX = 'att_hdr3_';   // new prefix: tabs made by the previous version still need X to AA
+
 function ensureHeaders_(sheet, name) {
   var cache = CacheService.getScriptCache();
-  var key = 'att_headers_' + (name || sheet.getName());
+  var key = HEADER_CACHE_PREFIX + (name || sheet.getName());
   if (cache.get(key)) return;
 
   var maxCols = sheet.getMaxColumns();
@@ -691,10 +1069,15 @@ function ensureHeaders_(sheet, name) {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]).setFontWeight('bold');
     sheet.setFrozenRows(1);
   } else if (!(sheet.getRange(1, 1).getValue() instanceof Date)) {   // row 1 is a header row
+    // fill in any of the added headers that are still blank, leaving the rest alone
     var extra = sheet.getRange(1, FIRST_NEW_COL, 1, HEADERS.length - FIRST_NEW_COL + 1);
-    if (extra.getValues()[0].join('') === '') {
-      extra.setValues([HEADERS.slice(FIRST_NEW_COL - 1)]).setFontWeight('bold');
-    }
+    var have = extra.getValues()[0], changed = false;
+    var want = HEADERS.slice(FIRST_NEW_COL - 1).map(function (h, i) {
+      if (text_(have[i])) return have[i];
+      changed = true;
+      return h;
+    });
+    if (changed) extra.setValues([want]).setFontWeight('bold');
   }
   cache.put(key, '1', 21600);
 }
@@ -809,6 +1192,31 @@ function rules_(v) {
   if (!n || n.length < 3) return null;
   var r = [Number(n[0]), Number(n[1]), Number(n[2])];
   return (r[0] <= r[1] && r[1] <= r[2]) ? r : null;
+}
+
+/** One student, even when two share a roll no. */
+function studentKey_(roll, name) {
+  return (text_(roll) + '|' + text_(name)).toLowerCase();
+}
+
+/** A date cell as yyyy-MM-dd, whether Sheets kept it as text or turned it into a date. */
+function dayText_(v, tz) {
+  if (v instanceof Date) return Utilities.formatDate(v, tz || Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  var s = text_(v);
+  var m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+  if (m) return m[1] + '-' + pad2_(+m[2]) + '-' + pad2_(+m[3]);
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);   // the US-style display some spreadsheets use
+  if (m) return m[3] + '-' + pad2_(+m[1]) + '-' + pad2_(+m[2]);
+  return s;
+}
+
+/** "18:45:03", "6:45:03 PM" -> minutes of the day, or null */
+function timeMin_(v) {
+  return minutes_(clock_(text_(v)));
+}
+
+function hm_(mins) {
+  return pad2_(Math.floor(mins / 60)) + ':' + pad2_(mins % 60);
 }
 
 function hash_(s) {

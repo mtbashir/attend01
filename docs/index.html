@@ -180,6 +180,11 @@
       <button type="button" class="btn btn-secondary" id="photoBtn">Save photo</button>
     </div>
 
+    <div id="checkoutBox" hidden>
+      <button type="button" class="btn btn-primary" id="checkoutBtn" style="margin-top:14px">Check out of class</button>
+    </div>
+    <p class="hint" id="checkoutHint" style="margin:10px 0 0"></p>
+
     <button type="button" class="btn btn-danger" id="signOutBtn">Sign out of class</button>
   </section>
 
@@ -223,9 +228,16 @@
   var CONFIG_URL = 'config.json';
   var ROSTER_FILE = 'roster.json';   // a copy of the class list kept beside this page, for a phone's first run
   var CONFIG_WAIT_MS = 6000;      // how long a first-time visitor waits for config.json
-  var CLASS_LAT = 31.48104614;   // FAST classroom latitude: put it here
-  var CLASS_LNG = 74.30328505;   // FAST classroom longitude: put it here
+  // Each class's location, radius and timing come from the Roster tab (Latitude, Longitude, Radius,
+  // Sign-in Opens, Check-out Opens, Early Leaver columns). The values below are only used when the
+  // Roster leaves them blank. 0, 0 means "no fallback location": such a class cannot be signed in to.
+  var CLASS_LAT = 0;
+  var CLASS_LNG = 0;
   var MAX_RADIUS_METERS = 100;
+  var DEFAULT_OPENS_MIN = 30;            // sign-in opens this many minutes before the start
+  var DEFAULT_CHECKOUT_MIN = 10;         // Check out appears this many minutes before the end
+  var DEFAULT_EARLY_MIN = 30;            // the last minutes of class in which the student must be seen
+  var CHECKOUT_GRACE_MIN = 30;           // check-out still possible this long after the end
   var GPS_TOLERANCE_MAX = 30;            // metres of reported GPS error forgiven at the edge of the area
   var GPS_MAX_ACCURACY = 150;            // a fix vaguer than ±150 m is not accepted for sign-in
   var PING_INTERVAL_MS = 2 * 60 * 1000;
@@ -428,8 +440,9 @@
     var rolls = [], names = {}, sections = {};
     if (roster) {
       roster.students.forEach(function (s) {
-        byRoll[norm(s[0])] = s;
-        rolls.push(s[0]);
+        // a list: two students can share a roll no in a badly kept Roster
+        if (!byRoll[norm(s[0])]) { byRoll[norm(s[0])] = []; rolls.push(s[0]); }
+        byRoll[norm(s[0])].push(s);
         names[s[1]] = 1;
         (byName[norm(s[1])] = byName[norm(s[1])] || []).push(s);
         if (s[2]) sections[s[2]] = 1;
@@ -473,6 +486,7 @@
         if (!res || res.notModified || !res.students) return;
         roster = {
           version: res.version, students: res.students, timetable: res.timetable || [],
+          classNames: res.classNames || {}, checkoutGraceMin: res.checkoutGraceMin,
           defaultRules: res.defaultRules || DEFAULT_RULES, savedAt: Date.now()
         };
         if (lsSet(K.roster, roster)) lsDel(K.oldRoster);
@@ -490,21 +504,64 @@
     return roster.timetable.filter(function (t) { return t.date === day && norm(t.section) === want; });
   }
 
-  function isScheduledToday(section, ts) {
-    if (!roster || !roster.timetable || !roster.timetable.length) return true;   // no timetable loaded: allow
-    return sessionsToday(section, ts).length > 0;
+  function numOr(v, d) { return typeof v === 'number' && isFinite(v) ? v : d; }
+  function graceMin() { return numOr(roster && roster.checkoutGraceMin, CHECKOUT_GRACE_MIN); }
+
+  /** Minutes of the day: when sign-in opens, the start, the end (null if unknown), when sign-in closes. */
+  function windowOf(t) {
+    var start = clockMin(t.startTime), end = clockMin(t.endTime);
+    return { open: start - numOr(t.opensMin, DEFAULT_OPENS_MIN), start: start, end: end, close: end !== null ? end : start + 24 * 60 };
   }
 
-  function evaluateLocal(section, ts) {
-    var r = { onTime: false, fined: false, late: false, absent: false, diff: null, sessionNo: '' };
-    var now = minutesOf(ts), best = null, bestGap = Infinity;
+  /**
+   * Which of today's sessions a sign-in now belongs to (same rule as pickSession_ in Code.gs).
+   * Returns { session } when sign-in is open, else { none | opensAt | endedAt } to explain why not.
+   */
+  function sessionForSignIn(section, ts) {
+    var now = minutesOf(ts), best = null, bestGap = Infinity, next = null, ended = null;
     sessionsToday(section, ts).forEach(function (t) {
-      var start = clockMin(t.startTime);
-      if (start === null) return;
-      var gap = Math.abs(now - start);
-      if (gap < bestGap) { best = t; bestGap = gap; }
+      var w = windowOf(t);
+      if (w.start === null) return;
+      if (now >= w.open && now <= w.close) {
+        var gap = Math.abs(now - w.start);
+        if (gap < bestGap) { best = t; bestGap = gap; }
+      } else if (now < w.open) {
+        if (next === null || w.open < next) next = w.open;
+      } else if (ended === null || w.close > ended) {
+        ended = w.close;
+      }
     });
-    if (!best) { r.onTime = true; return r; }
+    if (best) return { session: best };
+    if (next !== null) return { opensAt: next };
+    if (ended !== null) return { endedAt: ended };
+    return { none: true };
+  }
+
+  /** The classroom for a session: its own Roster location, else the fallback at the top of this script. */
+  function locationOf(t) {
+    var lat = t && numOr(t.lat, null), lng = t && numOr(t.lng, null);
+    if (lat !== null && lng !== null && !(lat === 0 && lng === 0)) {
+      return { lat: lat, lng: lng, radius: numOr(t.radius, MAX_RADIUS_METERS) };
+    }
+    if (locationSet()) return { lat: CLASS_LAT, lng: CLASS_LNG, radius: MAX_RADIUS_METERS };
+    return null;
+  }
+
+  function className(section) {
+    var m = roster && roster.classNames;
+    return (m && m[norm(section)]) || section;
+  }
+
+  /** A local timestamp for "HH:mm" on the day of ts. */
+  function atClock(ts, mins) {
+    var d = new Date(ts);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), Math.floor(mins / 60), mins % 60).getTime();
+  }
+
+  function evaluateLocal(best, ts) {
+    var r = { onTime: false, fined: false, late: false, absent: false, diff: null, sessionNo: '' };
+    var now = minutesOf(ts);
+    if (!best) { r.noSession = true; return r; }
     var rules = best.rules || (roster && roster.defaultRules) || DEFAULT_RULES;
     var diff = now - clockMin(best.startTime);
     r.diff = diff; r.sessionNo = best.sessionNo;
@@ -521,6 +578,7 @@
     if (v.absent) return { cls: 'p-bad', label: 'Absent', text: 'Marked absent' + d };
     if (v.late) return { cls: 'p-late', label: 'Late', text: 'Late and fined' + d };
     if (v.fined) return { cls: 'p-fine', label: 'Fined', text: 'Fined' + d };
+    if (v.noSession) return { cls: 'p-fine', label: 'No session', text: 'No session found in the timetable' };
     return { cls: 'p-ok', label: 'On time', text: 'On time' + d };
   }
 
@@ -542,24 +600,33 @@
     return { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 9999), ts: Date.now() };
   }
 
-  function distanceTo(fix) {
+  function distanceTo(fix, loc) {
     var R = 6371000, toRad = Math.PI / 180;
-    var dLat = (fix.lat - CLASS_LAT) * toRad, dLon = (fix.lng - CLASS_LNG) * toRad;
+    var dLat = (fix.lat - loc.lat) * toRad, dLon = (fix.lng - loc.lng) * toRad;
     var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(CLASS_LAT * toRad) * Math.cos(fix.lat * toRad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            Math.cos(loc.lat * toRad) * Math.cos(fix.lat * toRad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
     return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
   }
 
-  /** 0, 0 (or anything that is not a number) means the classroom has not been set for this copy. */
+  /** 0, 0 (or anything that is not a number) means no fallback classroom is set in this copy. */
   function locationSet() {
     return isFinite(CLASS_LAT) && isFinite(CLASS_LNG) && !(Number(CLASS_LAT) === 0 && Number(CLASS_LNG) === 0);
   }
 
-  function insideArea(fix, dist) {
-    return dist - Math.min(fix.acc, GPS_TOLERANCE_MAX) <= MAX_RADIUS_METERS;
+  function insideArea(fix, dist, loc) {
+    return dist - Math.min(fix.acc, GPS_TOLERANCE_MAX) <= (loc ? loc.radius : MAX_RADIUS_METERS);
+  }
+
+  function isIOS() {
+    return /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);   // iPad asking for the desktop site
   }
 
   function gpsErrorText(err) {
+    if (err && err.code === 1 && isIOS()) {
+      return 'Location is blocked. On iPhone: Settings > Privacy & Security > Location Services: turn it on, ' +
+             'and set Safari Websites to "While Using the App". Then in Safari tap aA > Website Settings > Location > Allow, and reload this page.';
+    }
     if (err && err.code === 1) return 'Location is blocked for this page. Allow location in your browser settings, then try again.';
     if (err && err.code === 3) return 'No GPS fix yet. Step outside or near a window and try again. Without mobile data the first fix can take a minute.';
     return 'Could not read your location. Check that location (GPS) is switched on.';
@@ -605,16 +672,30 @@
     return Date.now() - gps.best.ts < limit ? gps.best : null;
   }
 
+  /** The classroom for the section typed in the form, if a session of it is open now. */
+  function formLocation() {
+    var sec = val('sectionInput');
+    if (!sec) return null;
+    var p = sessionForSignIn(sec, Date.now());
+    return p.session ? locationOf(p.session) : null;
+  }
+
   function renderGpsLine() {
     var el = $('gpsLine');
     if (currentFix(60000)) {
-      var dist = distanceTo(gps.best);
-      if (insideArea(gps.best, dist)) {
+      var loc = formLocation();
+      if (!loc) {
+        el.className = 'gps ok';
+        el.textContent = 'Location ready (±' + gps.best.acc + ' m).';
+        return;
+      }
+      var dist = distanceTo(gps.best, loc);
+      if (insideArea(gps.best, dist, loc)) {
         el.className = 'gps ok';
         el.textContent = 'Location ready: ' + dist + ' m from class (±' + gps.best.acc + ' m).';
       } else {
         el.className = 'gps bad';
-        el.textContent = 'You are ' + dist + ' m from class. Sign-in needs you within ' + MAX_RADIUS_METERS + ' m.';
+        el.textContent = 'You are ' + dist + ' m from class. Sign-in needs you within ' + loc.radius + ' m.';
       }
     } else if (gps.error) {
       el.className = 'gps bad';
@@ -698,14 +779,19 @@
     if (signingIn) return;
     var roll = val('rollNoInput'), name = val('studentNameInput'), sec = val('sectionInput');
     if (!roll || !name || !sec) return say('Fill in roll no, name and section.', 'bad');
-    if (!locationSet()) {
-      return say('The classroom location has not been set yet, so sign-in is closed. ' +
-                 'The teacher needs to put it in CLASS_LAT and CLASS_LNG at the top of the page script.', 'bad');
+    if (!roster || !roster.timetable || !roster.timetable.length) {
+      return say('The class timetable is not on this phone yet. Open this page once with signal, then try again.', 'bad');
     }
 
     var pressedAt = Date.now();   // sign-in time is when the button was pressed, not when GPS answered
-    if (!isScheduledToday(sec, pressedAt)) {
-      return say('No class is scheduled for section ' + sec + ' on ' + localDate(pressedAt) + ', so sign-in is closed.', 'bad');
+    var pick = sessionForSignIn(sec, pressedAt);
+    if (pick.none) return say('No class is scheduled for ' + className(sec) + ' today (' + localDate(pressedAt) + '), so sign-in is closed.', 'bad');
+    if (pick.opensAt !== undefined) return say('Sign-in for ' + className(sec) + ' opens at ' + localHM(atClock(pressedAt, pick.opensAt)) + '.', 'bad');
+    if (pick.endedAt !== undefined) return say('Today\'s class for ' + className(sec) + ' ended at ' + localHM(atClock(pressedAt, pick.endedAt)) + '. Sign-in is closed.', 'bad');
+    var session = pick.session, loc = locationOf(session);
+    if (!loc) {
+      return say('The classroom location for ' + className(sec) + ' is not in the Roster yet (Latitude and Longitude columns), ' +
+                 'so sign-in is closed. Tell your teacher.', 'bad');
     }
 
     setSigningIn(true);
@@ -716,16 +802,22 @@
       if (fix.acc > GPS_MAX_ACCURACY) {
         return say('GPS signal is too weak (±' + fix.acc + ' m). Move near a window or outside and try again.', 'bad');
       }
-      var dist = distanceTo(fix);
-      if (!insideArea(fix, dist)) {
-        return say('You are ' + dist + ' m from class. You need to be within ' + MAX_RADIUS_METERS + ' m to sign in.', 'bad');
+      var dist = distanceTo(fix, loc);
+      if (!insideArea(fix, dist, loc)) {
+        return say('You are ' + dist + ' m from class. You need to be within ' + loc.radius + ' m to sign in.', 'bad');
       }
 
-      var v = evaluateLocal(sec, pressedAt);
+      var v = evaluateLocal(session, pressedAt);
+      var w = windowOf(session);
       var s = {
         section: sec, rollNo: roll, name: name, deviceId: deviceId(),
-        startTs: pressedAt, dayKey: localDate(pressedAt) + '|' + norm(sec) + '|' + norm(roll),
-        verdict: v, pingCount: 0, outSince: null, lastFix: fix, lastDist: dist, lastPingTs: Date.now()
+        startTs: pressedAt, dayKey: localDate(pressedAt) + '|' + norm(sec) + '|' + norm(roll) + '|' + norm(name),
+        verdict: v, pingCount: 0, outSince: null, lastFix: fix, lastDist: dist, lastPingTs: Date.now(),
+        sessionNo: session.sessionNo, loc: loc,
+        // with no end time in the Roster there is no check-out and no end-of-class ping rule
+        endTs: w.end !== null ? atClock(pressedAt, w.end) : null,
+        checkoutFromTs: w.end !== null ? atClock(pressedAt, w.end - numOr(session.checkoutMin, DEFAULT_CHECKOUT_MIN)) : null,
+        earlyFromTs: w.end !== null ? atClock(pressedAt, w.end - numOr(session.earlyMin, DEFAULT_EARLY_MIN)) : null
       };
       saveSession(s);
       lsSet(K.lastSection, sec);
@@ -741,9 +833,9 @@
       showSession(s, true);
       setTimeout(function () { refreshSummary(true); }, 8000 + spread(UPLOAD_SPREAD_MS));   // after this phone's record lands
 
-      var inRoster = !roster || !roster.students.length || byRoll[norm(roll)];
+      var inRoster = !roster || !roster.students.length || (byRoll[norm(roll)] || []).some(function (st) { return norm(st[1]) === norm(name); });
       say(inRoster ? 'Signed in. ' + (isOffline() ? 'Saved on this phone; it uploads when there is signal.' : '')
-                   : 'Signed in, but roll no ' + roll + ' is not in the class list. Tell your teacher.',
+                   : 'Signed in, but ' + name + ' with roll no ' + roll + ' is not in the class list. Tell your teacher.',
           inRoster ? 'ok' : 'bad');
     }, function (err) {
       setSigningIn(false);
@@ -768,7 +860,9 @@
     $('loginSection').hidden = true;
     $('sessionSection').hidden = false;
     $('activeName').textContent = s.name;
-    $('activeMeta').textContent = 'Roll no ' + s.rollNo + ', section ' + s.section + ', signed in at ' + localHM(s.startTs);
+    $('activeMeta').textContent = className(s.section) + (s.sessionNo ? ', session ' + s.sessionNo : '') +
+      '. Roll no ' + s.rollNo + ', signed in at ' + localHM(s.startTs) +
+      (s.endTs ? '. Class ends at ' + localHM(s.endTs) : '') + '.';
 
     var vd = verdictOf(s.verdict || { onTime: true, diff: null });
     var verdict = $('activeVerdict');
@@ -779,13 +873,62 @@
     verdict.appendChild(pill);
 
     renderPingLine(s);
+    renderCheckout();
     if (fresh) {
       var old = $('checkmark'), mark = old.cloneNode(true);   // clone restarts the tick animation
       mark.hidden = false;
       old.parentNode.replaceChild(mark, old);
       setTimeout(function () { $('checkmark').hidden = true; }, 2500);
     }
-    startPings();
+    if (loadSession()) startPings();   // renderCheckout may have just closed a session whose class is over
+  }
+
+  /** The Check out button shows from N minutes before the end until the grace period after it. */
+  function checkoutOpen(s, now) {
+    return !!(s && s.checkoutFromTs && s.endTs && now >= s.checkoutFromTs && now <= s.endTs + graceMin() * 60000);
+  }
+
+  function renderCheckout() {
+    var s = loadSession(), now = Date.now();
+    var open = checkoutOpen(s, now);
+    $('checkoutBox').hidden = !open;
+    $('signOutBtn').textContent = open ? 'Leave without checking out' : 'Sign out of class';
+    $('checkoutHint').textContent = s && s.checkoutFromTs && !open && now < s.checkoutFromTs
+      ? 'Check out opens at ' + localHM(s.checkoutFromTs) + '. Leaving before then counts as leaving early.' : '';
+    // the class is over and the grace period has passed: close the session
+    if (s && s.endTs && now > s.endTs + graceMin() * 60000) signOut('SESSION_ENDED', s.endTs);
+  }
+
+  /** Check-out needs a location inside the class area, like sign-in. */
+  function checkOut() {
+    var s = loadSession();
+    if (!s || signingIn) return;
+    var loc = sessionLoc(s);
+    if (!loc) return say('The classroom location is missing, so check-out is not possible. Tell your teacher.', 'bad');
+    var btn = $('checkoutBtn');
+    btn.disabled = true; signingIn = true;
+    say('Checking your location…');
+    getFix(20000, 45000).then(function (fix) {
+      btn.disabled = false; signingIn = false;
+      if (fix.acc > GPS_MAX_ACCURACY) return say('GPS signal is too weak (±' + fix.acc + ' m). Move near a window and try again.', 'bad');
+      var dist = distanceTo(fix, loc);
+      if (!insideArea(fix, dist, loc)) {
+        return say('You are ' + dist + ' m from class. Check-out only works inside the class area (' + loc.radius + ' m).', 'bad');
+      }
+      s.lastFix = fix; s.lastDist = dist;
+      saveSession(s);
+      signOut('CHECK_OUT');
+    }, function (err) {
+      btn.disabled = false; signingIn = false;
+      say(gpsErrorText(err), 'bad');
+    });
+  }
+
+  /** The classroom a session is checked against; sessions saved by an older page have no loc of their own. */
+  function sessionLoc(s) {
+    if (s.loc) return s.loc;
+    var t = sessionsToday(s.section, s.startTs).filter(function (x) { return !s.sessionNo || x.sessionNo === s.sessionNo; })[0];
+    return locationOf(t);
   }
 
   function renderPingLine(s, err) {
@@ -812,20 +955,24 @@
   function stopPings() { clearInterval(pingTimer); pingTimer = null; }
 
   /**
-   * Checked locally every 2 minutes. Only some checks are uploaded:
-   * leaving the area, coming back, and every PING_UPLOAD_EVERY-th check while inside.
+   * Checked locally every 2 minutes. Only some checks are uploaded: leaving the area, coming back,
+   * every PING_UPLOAD_EVERY-th check while inside, and the first check inside the last minutes of
+   * class, which is what keeps a student who stays off the early-leaver list.
    */
   function ping() {
     if (!loadSession()) return;
     getFix(60000, 30000).then(function (fix) {
       var s = loadSession();
       if (!s) return;
-      var now = Date.now(), dist = distanceTo(fix), upload = false;
+      var loc = sessionLoc(s);
+      if (!loc) return;
+      var now = Date.now(), dist = distanceTo(fix, loc), upload = false;
       s.lastFix = fix; s.lastDist = dist; s.lastPingTs = now;
 
-      if (insideArea(fix, dist)) {
+      if (insideArea(fix, dist, loc)) {
         if (s.outSince) { s.outSince = null; upload = true; }
         else { s.pingCount = (s.pingCount || 0) + 1; upload = s.pingCount % PING_UPLOAD_EVERY === 0; }
+        if (s.earlyFromTs && now >= s.earlyFromTs && !s.seenLate) { s.seenLate = true; upload = true; }
       } else {
         if (!s.outSince) s.outSince = now;
         upload = true;
@@ -852,7 +999,7 @@
       return Store.put('daylog', row);
     }).then(renderDay, function () {});
 
-    var type = auto ? 'AUTO_LOGOUT_ABSENT' : reason === 'SESSION_EXPIRED' ? 'SESSION_EXPIRED' : 'MANUAL_LOGOUT';
+    var type = auto ? 'AUTO_LOGOUT_ABSENT' : reason === 'MANUAL_LOGOUT' ? 'MANUAL_LOGOUT' : reason;   // CHECK_OUT, SESSION_ENDED, SESSION_EXPIRED
     enqueue(makeEvent(type, s, s.lastFix, s.lastDist, ts));
 
     clearSession();
@@ -860,6 +1007,8 @@
     showLogin();
     renderRosterHint();
     if (auto) say('Signed out automatically: you were outside the class area for 10 minutes. Marked absent.', 'bad');
+    else if (reason === 'CHECK_OUT') say('Checked out at ' + localHM(ts) + '.', 'ok');
+    else if (reason === 'SESSION_ENDED') say('Class ended at ' + localHM(ts) + '. You did not check out.', 'bad');
     else if (reason === 'SESSION_EXPIRED') say('Your last session was left open and has been closed at ' + when(ts) + '.');
     else say('Signed out of class.');
   }
@@ -1216,9 +1365,10 @@
       var byRoll = {};
 
       // what the sheet knows about the whole class
+      // keyed by roll no and name: two students sharing a roll no are still two students
       if (summary && summary.scope === scope) {
         summary.students.forEach(function (st) {
-          byRoll[norm(st[1])] = { time: st[0], rollNo: st[1], name: st[2], section: st[3], status: st[4] };
+          byRoll[norm(st[1]) + '|' + norm(st[2])] = { time: st[0], rollNo: st[1], name: st[2], section: st[3], status: st[4] };
         });
       }
 
@@ -1227,7 +1377,7 @@
         return r.date === today && (!scope || norm(r.section) === norm(scope));
       }).sort(function (a, b) { return a.loginTs - b.loginTs; })
         .forEach(function (r) {
-          var k = norm(r.rollNo);
+          var k = norm(r.rollNo) + '|' + norm(r.name);
           if (byRoll[k]) return;
           byRoll[k] = {
             time: r.loginTime, rollNo: r.rollNo, name: r.name, section: r.section,
@@ -1264,7 +1414,8 @@
         [r.time, r.rollNo, r.name, r.section].forEach(function (v) {
           var td = document.createElement('td'); td.textContent = v; tr.appendChild(td);   // textContent: no HTML injection
         });
-        var vd = verdictOf({ absent: r.status === 'Absent', late: r.status === 'Late', fined: r.status === 'Fined', diff: null });
+        var vd = verdictOf({ absent: r.status === 'Absent', late: r.status === 'Late', fined: r.status === 'Fined',
+                             noSession: r.status === 'No session', diff: null });
         var tdS = document.createElement('td'), pill = document.createElement('span');
         pill.className = 'pill ' + vd.cls; pill.textContent = vd.label;
         tdS.appendChild(pill); tr.appendChild(tdS);
@@ -1303,11 +1454,18 @@
   }
 
   function onRollInput() {
-    var s = byRoll[norm(val('rollNoInput'))];
-    if (s) {
-      $('studentNameInput').value = s[1];
-      if (s[2]) $('sectionInput').value = s[2];
+    var hits = byRoll[norm(val('rollNoInput'))] || [];
+    if (hits.length === 1) {
+      $('studentNameInput').value = hits[0][1];
+      if (hits[0][2]) $('sectionInput').value = hits[0][2];
       renderRosterHint('Found in the class list.');
+    } else if (hits.length > 1) {
+      // a shared roll no: never guess which student this is
+      $('studentNameInput').value = '';
+      var secs = {};
+      hits.forEach(function (h) { secs[h[2]] = 1; });
+      if (Object.keys(secs).length === 1 && hits[0][2]) $('sectionInput').value = hits[0][2];
+      renderRosterHint(hits.length + ' students share this roll no in the class list. Type your full name.', true);
     } else if (val('rollNoInput') && roster && roster.students.length) {
       renderRosterHint('Not in the class list saved on this phone. Check your roll no.', true);
     } else {
@@ -1331,6 +1489,8 @@
     $('studentNameInput').addEventListener('change', onNameChange);
     $('photoBtn').addEventListener('click', savePhoto);
     $('signOutBtn').addEventListener('click', function () { signOut('MANUAL_LOGOUT'); });
+    $('checkoutBtn').addEventListener('click', checkOut);
+    $('sectionInput').addEventListener('change', renderGpsLine);
     $('syncBtn').addEventListener('click', onSyncButton);
 
     window.addEventListener('online', function () { sync.failures = 0; renderSync(); runSync(false); refreshRoster(false); refreshSummary(false); });
@@ -1343,6 +1503,7 @@
       if (q.total) runSync(false);
       var s = loadSession();
       if (s && Date.now() - (s.lastPingTs || 0) >= PING_INTERVAL_MS) ping();   // timers pause while the screen is off
+      if (s) renderCheckout();
     });
 
     // Apps Script pages cannot reopen without signal, so warn before closing while offline.
@@ -1351,6 +1512,7 @@
     });
 
     setInterval(renderSync, 5000);
+    setInterval(function () { if (loadSession()) renderCheckout(); }, 20000);
   }
 
   function boot() {
@@ -1409,6 +1571,7 @@
       if (roster || !data || !data.students || !data.students.length) return;   // the sheet got there first
       roster = {
         version: 'bundled', students: data.students, timetable: data.timetable || [],
+        classNames: data.classNames || {}, checkoutGraceMin: data.checkoutGraceMin,
         defaultRules: data.defaultRules || DEFAULT_RULES, savedAt: Date.now()
       };
       lsSet(K.roster, roster);

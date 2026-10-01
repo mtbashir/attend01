@@ -32,7 +32,7 @@ ctx.__batch = [
   ev('e3', 'SIGN_IN', 'BSCS-A', '103', at('09:10')),   // late + fined
   ev('e4', 'SIGN_IN', 'BSCS-A', '104', at('09:20')),   // absent
   ev('e5', 'SIGN_IN', 'BSCS-A', '105', at('13:58')),   // nearest session is 14:00 -> on time, session 2
-  ev('e6', 'SIGN_IN', 'BSCS-C', '301', at('09:30')),   // no timetable -> On Time (original fallback)
+  ev('e6', 'SIGN_IN', 'BSCS-C', '301', at('09:30')),   // no timetable -> recorded as "No session found", not On Time
   ev('e7', 'GPS_PING_2MIN', 'BSCS-A', '101', at('09:14')),
   ev('e8', 'AUTO_LOGOUT_ABSENT', 'BSCS-A', '101', at('09:40')),
   ev('e9', 'SIGN_IN', 'BSCS-A', '=cmd', at('09:00'), { name: '+danger', skewMs: 9 * 60000 }),
@@ -55,7 +55,7 @@ assert.strictEqual(st('e2'), '+6 mins||Fined|||1');
 assert.strictEqual(st('e3'), '+10 mins||Fined|Late||1');
 assert.strictEqual(st('e4'), '+20 mins||||Absent|1');
 assert.strictEqual(st('e5'), '-2 mins|On Time||||2');
-assert.strictEqual(st('e6'), '|On Time||||');
+assert.strictEqual(st('e6'), 'No session found|||||', 'no session is never On Time');
 assert.strictEqual(byId.e8[17], 'Absent');
 assert.strictEqual(byId.e1[1] + ' ' + byId.e1[2] + ' ' + byId.e1[3], '2026-09-22 Tuesday 09:04:00');
 assert.strictEqual(byId.e9[5], "'=cmd"); assert.strictEqual(byId.e9[7], "'+danger");

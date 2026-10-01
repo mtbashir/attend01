@@ -50,6 +50,7 @@
         }
         return rng;
       },
+      setValue: function (v) { return rng.setValues([[v]]); },
       setFontWeight: function () { return rng; }
     };
     return rng;

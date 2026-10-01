@@ -4,7 +4,7 @@
  * background, so an update you push shows up the next time the page is opened.
  * Calls to the Apps Script web app (a different site) are never touched.
  */
-var CACHE = 'class-signin-v2';
+var CACHE = 'class-signin-v3';
 var SHELL = ['./', './index.html', './config.json', './roster.json', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 // Each file is cached on its own. Caching them as one list means a single missing file
