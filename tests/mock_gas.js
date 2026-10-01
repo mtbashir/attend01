@@ -21,6 +21,10 @@
   Sheet.prototype.getMaxColumns = function () { return this.maxCols; };
   Sheet.prototype.insertColumnsAfter = function (a, n) { this.maxCols += n; };
   Sheet.prototype.setFrozenRows = function (n) { this.frozen = n; };
+  Sheet.prototype.setFrozenColumns = function (n) { this.frozenCols = n; };
+  Sheet.prototype.getMaxRows = function () { return Math.max(1000, this.raw.length); };
+  Sheet.prototype.insertRowsAfter = function () {};
+  Sheet.prototype.clear = function () { this.raw.length = 0; this.shown.length = 0; this.bg = null; };
   Sheet.prototype.getRange = function (r, c, nr, nc) {
     var sh = this; nr = nr || 1; nc = nc || 1; sh.getRangeCalls++;
     if (c + nc - 1 > sh.maxCols) throw new Error('Range out of bounds');
@@ -51,6 +55,7 @@
         return rng;
       },
       setValue: function (v) { return rng.setValues([[v]]); },
+      setBackgrounds: function (b) { sh.bg = b; return rng; },
       setFontWeight: function () { return rng; }
     };
     return rng;

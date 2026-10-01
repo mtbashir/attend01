@@ -27,6 +27,7 @@ var CONFIG = {
   //   '{date}'            ->  "2026-09-30"          (a tab per day, all classes together)
   LOG_SHEET_PATTERN: '{date} {section}',
   LEGACY_LOG_SHEET: 'Sheet2',   // rows written before this change: still read, never added to
+  REGISTER_SHEET: 'Attendance Register',   // every student x every session, rebuilt by buildRegister()
   PHOTO_FOLDER: 'Classroom Attendance Photos',
   PHOTO_PUBLIC_LINK: false,     // true = anyone with the link can open student photos (old behaviour)
   DEFAULT_RULES: [5, 7, 15],    // minutes after start: fined after 5, late after 7, absent after 15
@@ -894,7 +895,10 @@ function updateFlags() {
   } finally {
     lock.releaseLock();
   }
-  return 'Updated ' + written + ' sign-in row(s) in ' + tabsDone + ' tab(s).';
+  var msg = 'Updated ' + written + ' sign-in row(s) in ' + tabsDone + ' tab(s).';
+  try { msg += ' ' + buildRegister(); }
+  catch (err) { msg += ' The register could not be rebuilt: ' + (err && err.message ? err.message : err); }
+  return msg;
 }
 
 /** Works out X to AA for one tab's rows (display values, columns A..AA). */
@@ -961,6 +965,177 @@ function installFlagTrigger() {
   });
   ScriptApp.newTrigger('updateFlags').timeBased().everyMinutes(15).create();
   return 'Early-leaver and shared-phone flags will now update every 15 minutes.';
+}
+
+
+/* ================================================================
+   Attendance register: every student against every session
+   ================================================================ */
+
+var REGISTER_FIXED = ['Section', 'Roll No', 'Student Name', 'Present', 'Fined', 'Late', 'Absent', 'Left Early'];
+var REGISTER_COLORS = { Present: '#e4f2e9', Fined: '#fbf0d6', Late: '#fce8dc', Absent: '#fae6e4', other: '#eef0f2', none: '#ffffff', noData: '#e3e6ea' };
+var NO_DATA = 'No data';
+var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * Rebuilds the "Attendance Register" tab: one row per student in the Roster, one column per
+ * session (headed by class, session no and date), and in each cell that student's status:
+ *   Present   signed in on time
+ *   Fined     signed in after the fine limit
+ *   Late      signed in after the late limit (also fined)
+ *   Absent    signed in after the absent limit, signed out for leaving the area, or never signed in
+ *             once the session is over
+ * " · Left early" is added when the Early Leaver flag is Yes. A session still to come is blank;
+ * a session of another class is greyed. A past session that nobody in the class signed in to
+ * shows "No data" (the app was not used that day), not Absent, and is left out of the totals. Totals per student are in columns D to H.
+ * Runs with updateFlags() (every 15 minutes once turned on) and from the Attendance menu.
+ * Everything in the tab is rewritten each time, so do not type into it.
+ */
+function buildRegister() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tz = ss.getSpreadsheetTimeZone();
+  var roster = loadRoster_();
+  var now = new Date();
+  var today = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+  var nowMin = minutes_(Utilities.formatDate(now, tz, 'HH:mm'));
+  var classNames = roster.classNames || {};
+
+  var sessions = roster.timetable.filter(function (t) {
+    return t.section && /^\d{4}-\d{2}-\d{2}$/.test(t.date) && minutes_(t.startTime) !== null;
+  }).sort(function (a, b) {
+    var sa = a.section.toLowerCase(), sb = b.section.toLowerCase();
+    if (sa !== sb) return sa < sb ? -1 : 1;
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return minutes_(a.startTime) - minutes_(b.startTime);
+  });
+  var students = roster.students.map(function (st, i) { return { roll: st[0], name: st[1], section: st[2], i: i }; })
+    .sort(function (a, b) {
+      var sa = text_(a.section).toLowerCase(), sb = text_(b.section).toLowerCase();
+      return sa !== sb ? (sa < sb ? -1 : 1) : a.i - b.i;
+    });
+
+  // how many sessions each class has on each day, to place sign-ins that carry no session no
+  var perDay = {};
+  sessions.forEach(function (t) { var k = t.date + '|' + t.section.toLowerCase(); perDay[k] = (perDay[k] || 0) + 1; });
+
+  // That day's log rows for a class: its own tab, plus the old single tab for days before the split
+  var legacy = null, dayCache = {};
+  function legacyRows() {
+    if (legacy) return legacy;
+    legacy = {};
+    var sh = CONFIG.LEGACY_LOG_SHEET ? ss.getSheetByName(CONFIG.LEGACY_LOG_SHEET) : null;
+    if (sh && sh.getLastRow() > 1) {
+      var n = Math.min(sh.getLastColumn(), HEADERS.length);
+      sh.getRange(2, 1, sh.getLastRow() - 1, n).getDisplayValues().forEach(function (r) {
+        var k = dayText_(r[1], tz) + '|' + text_(r[6]).toLowerCase();
+        (legacy[k] = legacy[k] || []).push(r);
+      });
+    }
+    return legacy;
+  }
+  function dayRows(date, section) {
+    var k = date + '|' + section.toLowerCase();
+    if (dayCache[k]) return dayCache[k];
+    var rows = [];
+    var sh = ss.getSheetByName(logSheetName_(date, section));
+    if (sh && sh.getLastRow() > 1) {
+      var n = Math.min(sh.getLastColumn(), HEADERS.length);
+      sh.getRange(2, 1, sh.getLastRow() - 1, n).getDisplayValues().forEach(function (r) {
+        if (text_(r[6]).toLowerCase() === section.toLowerCase()) rows.push(r);   // '{date}' pattern: all classes in one tab
+      });
+    }
+    rows = rows.concat(legacyRows()[k] || []);
+    return (dayCache[k] = rows);
+  }
+
+  // A row's student: by roll no and name, else by name alone within the class (older rows had no real roll no)
+  var byKey = {}, byName = {};
+  students.forEach(function (st) {
+    byKey[studentKey_(st.roll, st.name)] = st;
+    var nk = text_(st.section).toLowerCase() + '|' + text_(st.name).toLowerCase();
+    byName[nk] = byName.hasOwnProperty(nk) ? null : st;   // a name used twice in one class cannot be matched by name
+  });
+  function whoIs(r) {
+    return byKey[studentKey_(r[5], r[7])] || byName[text_(r[6]).toLowerCase() + '|' + text_(r[7]).toLowerCase()] || null;
+  }
+
+  // status[sessionIndex][studentIndex]
+  var status = sessions.map(function (t) {
+    var out = { any: false };
+    var rows = dayRows(t.date, t.section);
+    var only = perDay[t.date + '|' + t.section.toLowerCase()] === 1;
+    var mine = function (r) { return text_(r[18]) === t.sessionNo || (!text_(r[18]) && only); };
+    rows.forEach(function (r) {
+      var type = text_(r[4]);
+      if (type !== 'SIGN_IN' && type !== 'AUTO_LOGOUT_ABSENT') return;
+      if (type === 'SIGN_IN' && !mine(r)) return;
+      if (type === 'AUTO_LOGOUT_ABSENT' && !only) return;   // cannot tell which of the day's sessions it ended
+      var st = whoIs(r);
+      if (!st) return;
+      var cur = out[st.i] || { signedIn: false };
+      if (type === 'AUTO_LOGOUT_ABSENT') { cur.autoAbsent = true; out[st.i] = cur; return; }
+      if (cur.signedIn) return;                             // the first sign-in of the session counts
+      cur.signedIn = true;
+      out.any = true;
+      cur.word = text_(r[17]) ? 'Absent' : text_(r[16]) ? 'Late' : text_(r[15]) ? 'Fined' : 'Present';
+      cur.leftEarly = text_(r[25]) === 'Yes';
+      out[st.i] = cur;
+    });
+    return out;
+  });
+
+  // ---- the grid ----
+  var nFixed = REGISTER_FIXED.length;
+  var head1 = REGISTER_FIXED.map(function (h, c) { return c === 2 ? 'Class' : ''; });
+  var head2 = REGISTER_FIXED.map(function (h, c) { return c === 2 ? 'Session' : ''; });
+  var head3 = REGISTER_FIXED.slice();
+  sessions.forEach(function (t) {
+    head1.push(classNames[t.section.toLowerCase()] || t.section);
+    head2.push('S' + t.sessionNo);
+    var d = t.date.split('-');
+    head3.push(+d[2] + '-' + MONTHS[+d[1] - 1] + '-' + d[0]);
+  });
+  var values = [head1, head2, head3];
+  var colors = [head1.map(function () { return '#f4f6f8'; }), head2.map(function () { return '#f4f6f8'; }), head3.map(function () { return '#f4f6f8'; })];
+
+  students.forEach(function (st) {
+    var counts = { Present: 0, Fined: 0, Late: 0, Absent: 0, early: 0 };
+    var cells = [], cellColors = [];
+    sessions.forEach(function (t, j) {
+      if (t.section.toLowerCase() !== text_(st.section).toLowerCase()) { cells.push(''); cellColors.push(REGISTER_COLORS.other); return; }
+      var w = windowOf_(t);
+      var over = t.date < today || (t.date === today && nowMin > (w.end !== null ? w.end : w.start + CONFIG.DEFAULT_RULES[2]));
+      if (over && !status[j].any) { cells.push(NO_DATA); cellColors.push(REGISTER_COLORS.noData); return; }
+      var s = status[j][st.i];
+      var word = '';
+      if (s && s.signedIn) word = s.autoAbsent ? 'Absent' : s.word;
+      else if (s && s.autoAbsent) word = 'Absent';
+      else if (over) word = 'Absent';                        // never signed in to a session that is over
+      if (!word) { cells.push(''); cellColors.push(REGISTER_COLORS.none); return; }
+      counts[word]++;
+      var early = s && s.signedIn && s.leftEarly && word !== 'Absent';
+      if (early) counts.early++;
+      cells.push(word + (early ? ' · Left early' : ''));
+      cellColors.push(REGISTER_COLORS[word]);
+    });
+    values.push([st.section, st.roll, st.name, counts.Present, counts.Fined, counts.Late, counts.Absent, counts.early].concat(cells));
+    colors.push(REGISTER_FIXED.map(function () { return '#ffffff'; }).concat(cellColors));
+  });
+
+  // ---- write it ----
+  var sheet = ss.getSheetByName(CONFIG.REGISTER_SHEET) || ss.insertSheet(CONFIG.REGISTER_SHEET, 0);
+  sheet.clear();
+  var nRows = values.length, nCols = values[0].length;
+  if (sheet.getMaxColumns() < nCols) sheet.insertColumnsAfter(sheet.getMaxColumns(), nCols - sheet.getMaxColumns());
+  if (sheet.getMaxRows() < nRows) sheet.insertRowsAfter(sheet.getMaxRows(), nRows - sheet.getMaxRows());
+  var range = sheet.getRange(1, 1, nRows, nCols);
+  range.setValues(values);
+  range.setBackgrounds(colors);
+  sheet.getRange(1, 1, 3, nCols).setFontWeight('bold');
+  sheet.setFrozenRows(3);
+  sheet.setFrozenColumns(3);
+  return 'Attendance register: ' + students.length + ' student(s) x ' + sessions.length + ' session(s), updated ' +
+         Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm') + '.';
 }
 
 
@@ -1057,6 +1232,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Update early-leaver and shared-phone flags now', 'menuUpdateFlags')
     .addItem('Update flags automatically every 15 min', 'menuInstallFlagTrigger')
+    .addItem('Update the attendance register now', 'menuBuildRegister')
     .addSeparator()
     .addItem('Send Roster changes to phones now', 'menuClearRosterCache')
     .addToUi();
@@ -1071,6 +1247,7 @@ function menuCheckRoster() {
 }
 function menuSetupRoster() { SpreadsheetApp.getUi().alert(setupRosterColumns()); }
 function menuUpdateFlags() { SpreadsheetApp.getUi().alert(updateFlags()); }
+function menuBuildRegister() { SpreadsheetApp.getUi().alert(buildRegister()); }
 function menuInstallFlagTrigger() { SpreadsheetApp.getUi().alert(installFlagTrigger()); }
 function menuClearRosterCache() { clearRosterCache(); SpreadsheetApp.getUi().alert('Phones will get the Roster the next time they open the page with signal.'); }
 

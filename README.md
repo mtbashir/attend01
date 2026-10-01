@@ -111,7 +111,18 @@ Give every student their own roll number. Two students sharing one are kept apar
 | Add the new Roster columns | Adds the columns above and fills the defaults. Running it again adds nothing |
 | Update early-leaver and shared-phone flags now | Fills the four flag columns for classes that have ended |
 | Update flags automatically every 15 min | Turns on a timer that does the above. Do this once |
+| Update the attendance register now | Rebuilds the *Attendance Register* tab (also rebuilt every 15 minutes by the timer) |
 | Send Roster changes to phones now | Phones pick up Roster edits within 5 minutes anyway |
+
+**Attendance Register tab**
+
+One row per student in the Roster, one column per session. The three header rows give the class, the session number and the date. Each cell holds that student's status: **Present**, **Fined**, **Late** (late and fined) or **Absent**. Absent covers signing in after the absent limit, being signed out for leaving the area, and never signing in to a session that is over. *· Left early* is added when the Early Leaver flag is Yes. Columns D to H total each student's Present, Fined, Late, Absent and Left Early.
+
+- A session still to come is blank.
+- A session of another class is grey.
+- A past session nobody in the class signed in to shows **No data** (the app was not used that day) and is left out of the totals.
+
+The tab is rebuilt from the log tabs every time, so anything typed into it is overwritten. Rows recorded before the per-class tabs, in `Sheet2`, are included, matched by name when their roll number is not the student's.
 
 **One tab per class per day**
 
