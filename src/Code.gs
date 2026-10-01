@@ -1111,10 +1111,11 @@ function buildRegister() {
       if (type === 'AUTO_LOGOUT_ABSENT') {
         if (!only) return;                                  // cannot tell which of the day's sessions it ended
         // Walking out after the class has ended is not an absence (the old page did this to
-        // students who left with it still open). Only a sign-out during class counts.
-        // compared as date and time: a phone often sends it when next opened, the following morning
-        var end = windowOf_(t).end, e = eventAt(r);
-        if (end !== null && e && (e.date > t.date || (e.date === t.date && e.min > end))) return;
+        // students who left with it still open).
+        // Only a sign-out while the class was running counts: from when sign-in opens to the end.
+        // One stamped before that (seen on old rows) or after it (going home) says nothing about this class.
+        var win = windowOf_(t), e = eventAt(r);
+        if (e && (e.date !== t.date || e.min < win.open || (win.end !== null && e.min > win.end))) return;
       }
       var st = whoIs(r);
       if (!st) {
