@@ -69,7 +69,7 @@ var ROSTER_CACHE_KEY = 'att_roster_v3';
  * them never shifts columns A to M. Column D (unused) can hold Class Name too.
  */
 var ROSTER_EXTRAS = [
-  { key: 'className',   header: 'Class Name',                                test: /class\s*name/i },
+  { key: 'className',   header: 'Class Name',                                test: /class|course/i },
   { key: 'lat',         header: 'Latitude',                                  test: /^lat(itude)?\b/i },
   { key: 'lng',         header: 'Longitude',                                 test: /^(longitude|long|lon|lng)\b/i },
   { key: 'radius',      header: 'Radius (m)',                                test: /radius/i },
@@ -196,10 +196,15 @@ function loadRoster_() {
 }
 
 /**
- * Reads the Roster tab. Columns A to M are read by position, as before:
+ * Reads the Roster tab. Every column is found by its header, so columns can be added,
+ * moved or reordered (the live Roster has Class/Course inserted at E). Headers it knows:
+ *   Section (twice: the one before Session No is the student's, the one after it the session's),
+ *   Student Roll No, Student Name, Class Name / Class/Course, Session No, Day, Session Dates,
+ *   Start Time, End Time, Fine / Late / Absent if Delay by Min (or one Rules column),
+ *   Latitude / LAT, Longitude / LONG, Radius, Sign-in Opens, Check-out Opens, Early Leaver.
+ * If the headers cannot be recognised, columns A to M are read by position, as before:
  *   A Section, B Roll No, C Student Name, D (unused), E Session No, F Day, G Date, H Section,
  *   I Start Time, J End Time, K-M rules (fined / late / absent minutes)
- * The optional columns in ROSTER_EXTRAS are found by their header.
  * Also returns the problems it noticed, for checkRoster().
  */
 function parseRoster_() {
@@ -214,7 +219,13 @@ function parseRoster_() {
   var raw = range.getValues();
   var shown = range.getDisplayValues();   // time cells come back as "9:00", not as an 1899 Date
 
-  var col = rosterExtraCols_(shown[0]);
+  var layout = rosterColumns_(shown[0]);
+  var col = layout.col;
+  out.byPosition = layout.byPosition;
+  if (layout.byPosition) {
+    out.issues.push('The Roster headers were not recognised (looked for: ' + layout.notFound.join(', ') +
+                    '), so columns A to M are read by position. Check that row 1 has the column names.');
+  }
   ROSTER_EXTRAS.forEach(function (x) { if (col[x.key] === undefined) out.missing.push(x.header); });
   var cell = function (i, key) { return col[key] === undefined ? '' : text_(shown[i][col[key]]); };
   var num = function (i, key) {
@@ -224,30 +235,33 @@ function parseRoster_() {
     return isFinite(n) ? n : NaN;
   };
   var orDefault = function (n, key) { return (n === null || isNaN(n)) ? CONFIG[EXTRA_DEFAULTS[key]] : n; };
+  var letter = function (key) { return col[key] === undefined ? '?' : colLetter_(col[key] + 1); };
+  var rulesCols = layout.rules;   // three columns: fined, late, absent (or one Rules column and the two after it)
 
   for (var i = 1; i < raw.length; i++) {
     var rowNo = i + 1;
-    var section = text_(shown[i][0]);
-    var roll = text_(shown[i][1]);
-    var name = text_(shown[i][2]);
+    var section = cell(i, 'section');
+    var roll = cell(i, 'roll');
+    var name = cell(i, 'name');
     if (roll && name) out.students.push([roll, name, section]);
 
-    var sessionNo = text_(shown[i][4]);
+    var sessionNo = cell(i, 'sessionNo');
     var className = cell(i, 'className');
     if (!sessionNo) {
       if (className && section) out.classNames[section.toLowerCase()] = className;
       continue;
     }
 
+    var ruleText = rulesCols.map(function (c) { return text_(shown[i][c]); }).join(',');
     var t = {
       sessionNo: sessionNo,
-      day: text_(shown[i][5]),
-      date: dateKey_(raw[i][6], shown[i][6], tz),
-      section: text_(shown[i][7]),
-      startTime: clock_(shown[i][8]),
-      endTime: clock_(shown[i][9]),
-      // rules in one cell ("5,10,20") or in three columns K, L and M; blank = defaults
-      rules: rules_([shown[i][10], shown[i][11], shown[i][12]].join(',')),
+      day: cell(i, 'day'),
+      date: col.date === undefined ? '' : dateKey_(raw[i][col.date], shown[i][col.date], tz),
+      section: cell(i, 'sessionSection'),
+      startTime: clock_(cell(i, 'start')),
+      endTime: clock_(cell(i, 'end')),
+      // rules in one cell ("5,10,20") or in three columns; blank = defaults
+      rules: rules_(ruleText),
       lat: num(i, 'lat'),
       lng: num(i, 'lng'),
       radius: orDefault(num(i, 'radius'), 'radius'),
@@ -258,12 +272,12 @@ function parseRoster_() {
     if (className && t.section) out.classNames[t.section.toLowerCase()] = className;
 
     var where = 'Roster row ' + rowNo + ' (session ' + sessionNo + (t.section ? ', ' + t.section : '') + ')';
-    if (!t.section) out.issues.push(where + ': no section in column H.');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date)) out.issues.push(where + ': the date "' + text_(shown[i][6]) + '" cannot be read.');
-    if (!t.startTime) out.issues.push(where + ': the start time "' + text_(shown[i][8]) + '" cannot be read. Write it like 18:30.');
-    if (!t.endTime) out.issues.push(where + ': the end time "' + text_(shown[i][9]) + '" cannot be read. Without it there is no check-out and no early-leaver check.');
+    if (!t.section) out.issues.push(where + ': no section in column ' + letter('sessionSection') + '.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date)) out.issues.push(where + ': the date "' + cell(i, 'date') + '" in column ' + letter('date') + ' cannot be read.');
+    if (!t.startTime) out.issues.push(where + ': the start time "' + cell(i, 'start') + '" in column ' + letter('start') + ' cannot be read. Write it like 18:30.');
+    if (!t.endTime) out.issues.push(where + ': the end time "' + cell(i, 'end') + '" in column ' + letter('end') + ' cannot be read. Without it there is no check-out and no early-leaver check.');
     if (t.startTime && t.endTime && minutes_(t.endTime) <= minutes_(t.startTime)) out.issues.push(where + ': the class ends before it starts.');
-    if ([shown[i][10], shown[i][11], shown[i][12]].join('').trim() && !t.rules) {
+    if (ruleText.replace(/,/g, '').trim() && !t.rules) {
       out.issues.push(where + ': the fined / late / absent minutes must be three numbers, smallest first. The defaults ' + CONFIG.DEFAULT_RULES.join(', ') + ' are used.');
     }
     if (t.lat === null || t.lng === null) out.issues.push(where + ': no classroom Latitude / Longitude, so nobody can sign in to it.');
@@ -278,19 +292,81 @@ function parseRoster_() {
   return out;
 }
 
-/** Column index of each optional Roster column, from the header row. A to C and E to M are never taken. */
-function rosterExtraCols_(headerRow) {
-  var col = {};
+/**
+ * Which column holds what, from the Roster's header row. The first matching rule wins for a
+ * header, so "Late if Delay by Min" is never taken for Latitude, nor "Session Dates" for Session No.
+ */
+var ROSTER_HEADER_RULES = [
+  { key: 'checkoutMin', test: /check.?out/i },
+  { key: 'earlyMin',    test: /early|leaver/i },
+  { key: 'opensMin',    test: /sign.?in.*open|open.*before.*start/i },
+  { key: 'className',   test: /class|course/i },
+  { key: 'roll',        test: /roll/i },
+  { key: 'name',        test: /name/i },
+  { key: 'sessionNo',   test: /session\s*(no|num|#)|^session$/i },
+  { key: 'date',        test: /date/i },
+  { key: 'day',         test: /^day\b|weekday/i },
+  { key: 'start',       test: /start/i },
+  { key: 'end',         test: /^end\b|end\s*time|finish/i },
+  { key: 'fine',        test: /fine/i },
+  { key: 'late',        test: /^late\b|late\s*if/i },
+  { key: 'absent',      test: /absent/i },
+  { key: 'rules',       test: /rule/i },
+  { key: 'lat',         test: /^lat(itude)?\b/i },
+  { key: 'lng',         test: /^(longitude|long|lon|lng)\b/i },
+  { key: 'radius',      test: /radius/i },
+  { key: 'section',     test: /section/i }
+];
+var ROSTER_REQUIRED = ['roll', 'name', 'sessionNo', 'date', 'start'];
+var ROSTER_BY_POSITION = { section: 0, roll: 1, name: 2, sessionNo: 4, day: 5, date: 6, sessionSection: 7, start: 8, end: 9 };
+
+function rosterColumns_(headerRow) {
+  var col = {}, sections = [];
   for (var c = 0; c < headerRow.length; c++) {
-    if (c < 3 || (c > 3 && c < 13)) continue;
     var h = text_(headerRow[c]);
     if (!h) continue;
-    for (var k = 0; k < ROSTER_EXTRAS.length; k++) {
-      var x = ROSTER_EXTRAS[k];
-      if (col[x.key] === undefined && x.test.test(h)) { col[x.key] = c; break; }
+    for (var k = 0; k < ROSTER_HEADER_RULES.length; k++) {
+      var rule = ROSTER_HEADER_RULES[k];
+      if (!rule.test.test(h)) continue;
+      if (rule.key === 'section') sections.push(c);
+      else if (col[rule.key] === undefined) col[rule.key] = c;
+      break;
     }
   }
-  return col;
+  var notFound = ROSTER_REQUIRED.filter(function (k) { return col[k] === undefined; });
+
+  if (notFound.length) {
+    // Old layout without recognisable headers: A to M by position; only the optional extras by header,
+    // and never from a column the positions already use (D, unused, may hold Class Name).
+    var pos = {};
+    for (var key in ROSTER_BY_POSITION) pos[key] = ROSTER_BY_POSITION[key];
+    ROSTER_EXTRAS.forEach(function (x) {
+      var c2 = col[x.key];
+      if (c2 !== undefined && (c2 === 3 || c2 >= 13)) pos[x.key] = c2;
+    });
+    return { col: pos, rules: [10, 11, 12], byPosition: true, notFound: notFound };
+  }
+
+  // Two "Section" columns: the student's comes before Session No, the session's after it
+  var before = sections.filter(function (c) { return c < col.sessionNo; });
+  var after = sections.filter(function (c) { return c > col.sessionNo; });
+  col.section = before.length ? before[0] : sections[0];
+  col.sessionSection = after.length ? after[0] : col.section;
+
+  var rules;
+  if (col.fine !== undefined && col.late !== undefined && col.absent !== undefined) rules = [col.fine, col.late, col.absent];
+  else if (col.rules !== undefined) rules = [col.rules, col.rules + 1, col.rules + 2].filter(function (c) {
+    return c === col.rules || (c < headerRow.length && !text_(headerRow[c]));   // a lone Rules column may spill into blank-headed ones
+  });
+  else rules = [];
+  return { col: col, rules: rules, byPosition: false, notFound: [] };
+}
+
+/** 1 -> A, 27 -> AA */
+function colLetter_(n) {
+  var s = '';
+  while (n > 0) { var m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+  return s;
 }
 
 /** Run this by hand after bulk-editing the Roster if you want phones to see it immediately. */
@@ -925,10 +1001,10 @@ function checkRoster() {
   p.students.forEach(function (st) { if (st[2]) withStudents[st[2].toLowerCase()] = st[2]; });
   p.timetable.forEach(function (t) { if (t.section) withSessions[t.section.toLowerCase()] = t.section; });
   Object.keys(withSessions).forEach(function (k) {
-    if (!withStudents[k]) out.push('Class ' + withSessions[k] + ' has sessions but no students in columns A to C.');
+    if (!withStudents[k]) out.push('Class ' + withSessions[k] + ' has sessions but no students.');
   });
   Object.keys(withStudents).forEach(function (k) {
-    if (!withSessions[k]) out.push('Class ' + withStudents[k] + ' has students but no sessions in columns E to M.');
+    if (!withSessions[k]) out.push('Class ' + withStudents[k] + ' has students but no sessions.');
   });
   return out;
 }
@@ -944,7 +1020,7 @@ function setupRosterColumns() {
   if (!sheet) return 'There is no tab called "' + CONFIG.ROSTER_SHEET + '".';
   var lastCol = Math.max(13, sheet.getLastColumn());
   var header = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
-  var col = rosterExtraCols_(header);
+  var col = rosterColumns_(header).col;
   var added = [];
   ROSTER_EXTRAS.forEach(function (x) {
     if (col[x.key] !== undefined) return;
@@ -957,7 +1033,7 @@ function setupRosterColumns() {
 
   var filled = 0, last = sheet.getLastRow();
   if (last > 1) {
-    var sessions = sheet.getRange(2, 5, last - 1, 1).getDisplayValues();   // E Session No
+    var sessions = sheet.getRange(2, col.sessionNo + 1, last - 1, 1).getDisplayValues();   // Session No
     Object.keys(EXTRA_DEFAULTS).forEach(function (key) {
       var rng = sheet.getRange(2, col[key] + 1, last - 1, 1);
       var vals = rng.getDisplayValues(), change = false;

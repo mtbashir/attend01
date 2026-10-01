@@ -148,7 +148,7 @@ let problems = run('checkRoster()');
 const has = (re) => assert.ok(problems.some(p => re.test(p)), re + ' not found in:\n' + problems.join('\n'));
 has(/missing: Class Name, Latitude, Longitude, Radius/);
 has(/Roll no ECOM-SEP-26 in ECOM-SEP-26 is shared by 3 students/);
-has(/start time "half six" cannot be read/);
+has(/start time "half six" in column I cannot be read/);
 has(/no classroom Latitude/);
 has(/three numbers, smallest first/);
 has(/GHOST has sessions but no students/);
@@ -165,5 +165,40 @@ assert.ok(/already there/.test(setup2) && !/Filled/.test(setup2), 'second run ad
 problems = run('checkRoster()');
 assert.ok(!problems.some(p => /missing:/.test(p)));
 console.log('setupRosterColumns ok:', setup1);
+
+// ---------------------------------------------------------------- 5. the live Roster layout (1 Oct 2026)
+// Class/Course inserted at E pushes every timetable column one to the right; LAT / LONG / Radius at O-Q.
+// Columns are found by header, so this must read exactly like the standard layout.
+freshSheets();
+const LIVE = ['Section', 'Student Roll No', 'Student Name', '', 'Class/Course', 'Session No. ', 'Day', 'Session Dates', 'Section', 'Start Time',
+  'End Time', 'Fine if Delay by Min', 'Late if Delay by Min', 'Absent if Delay by Min', 'LAT', 'LONG', 'Radius'];
+const t1899 = (h, m) => new Date(Date.UTC(1899, 11, 30, h - 5, m - 28));   // how Sheets hands back a time-only cell
+const liveRows = [
+  ['ECOM-SEP-26', '1', 'Abdullah Umar', '', 'ECOM-SEP-26', '4', 'Thursday', new Date(DAY + 'T00:00:00+05:00'), 'ECOM-SEP-26', t1899(18, 30), t1899(20, 30), 5, 10, 20, 31.47084875, 74.40948265, 300],
+  ['ECOM-SEP-26', '14', 'Mahnoor Elahi', '', 'BSBA 7A', '1', 'Thursday', new Date(DAY + 'T00:00:00+05:00'), 'BSBA 7A', t1899(16, 0), t1899(17, 20), 0, 7, 15, 31.48103858, 74.30327411, 300],
+];
+const sh5 = ctx.__gas.sheets.Roster;
+sh5.raw = [LIVE].concat(liveRows); sh5.maxCols = 30;
+sh5.shown = sh5.raw.map((r, i) => r.map((v, j) => !i ? v : j === 7 ? '1-Oct-2026' : j === 9 ? (i === 1 ? '6:30:00 PM' : '4:00:00 PM') : j === 10 ? (i === 1 ? '8:30:00 PM' : '5:20:00 PM') : String(v)));
+run('clearRosterCache()');
+const live = run("getRosterData('none')");
+const s4 = live.timetable.find(t => t.section === 'ECOM-SEP-26');
+eq([s4.sessionNo, s4.date, s4.startTime, s4.endTime, s4.rules, s4.lat, s4.radius], ['4', DAY, '18:30', '20:30', [5, 10, 20], 31.47084875, 300]);
+const bsba = live.timetable.find(t => t.section === 'BSBA 7A');
+eq([bsba.sessionNo, bsba.startTime, bsba.endTime, bsba.rules, bsba.lng], ['1', '16:00', '17:20', [0, 7, 15], 74.30327411]);
+eq(live.students[0], ['1', 'Abdullah Umar', 'ECOM-SEP-26'], 'student block read from A to C');
+assert.strictEqual(live.classNames['bsba 7a'], 'BSBA 7A', 'Class/Course is the class name');
+ctx.__l = [ev('L1', 'SIGN_IN', '1', 'Abdullah Umar', at('18:42'), { lat: 31.4708, lng: 74.4095 })];
+run('recordAttendanceBatch(__l)');
+const l1 = run('__logRows()').find(x => x[22] === 'L1');
+assert.strictEqual([l1[13], l1[15], l1[16], l1[18]].join('|'), '+12 mins|Fined|Late|4', '12 minutes late on the live layout');
+problems = run('checkRoster()');
+assert.ok(!problems.some(p => /cannot be read|not recognised|no classroom/.test(p)), 'live layout reads cleanly:\n' + problems.join('\n'));
+eq(run('rosterColumns_(' + JSON.stringify(LIVE) + ').col.sessionSection'), 8, 'the second Section (I) is the session\'s');
+const setupLive = run('setupRosterColumns()');
+assert.ok(/^Added: Check-out Opens \(min before end\), Early Leaver if Not Seen \(min before end\), Sign-in Opens \(min before start\)\. Filled 6/.test(setupLive),
+  'only the three missing columns are added, defaults go into both session rows: ' + setupLive);
+eq(sh5.raw[1].slice(17, 20).map(String), ['10', '30', '30']);
+console.log('live Roster layout ok (Class/Course at E, LAT/LONG/Radius at O-Q, times as 6:30:00 PM)');
 
 console.log('\nALL UNIVERSAL TESTS PASSED');
