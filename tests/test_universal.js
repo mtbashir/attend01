@@ -201,4 +201,66 @@ assert.ok(/^Added: Check-out Opens \(min before end\), Early Leaver if Not Seen 
 eq(sh5.raw[1].slice(17, 20).map(String), ['10', '30', '30']);
 console.log('live Roster layout ok (Class/Course at E, LAT/LONG/Radius at O-Q, times as 6:30:00 PM)');
 
+// ---------------------------------------------------------------- 6. attendance register
+freshSheets();
+const D2 = dayOf(Date.now() - 2 * 86400000), D1 = DAY, TMR = dayOf(Date.now() + 86400000);
+const sessRow = (sec, no, day, start, end, rules, loc) => ['', '', '', '', sec, no, 'x', new Date(day + 'T00:00:00+05:00'), sec, start, end].concat(rules, loc, [300]);
+const reg = ctx.__gas.sheets.Roster;
+reg.raw = [LIVE,
+  ['ECOM-SEP-26', '1', 'Amna'].concat(sessRow('ECOM-SEP-26', '1', D2, '18:30', '20:30', [5, 10, 20], LUMS).slice(3)),
+  ['ECOM-SEP-26', '2', 'Bilal'].concat(sessRow('ECOM-SEP-26', '2', D1, '18:30', '20:30', [5, 10, 20], LUMS).slice(3)),
+  ['ECOM-SEP-26', '3', 'Chand'].concat(sessRow('ECOM-SEP-26', '3', TMR, '18:30', '20:30', [5, 10, 20], LUMS).slice(3)),
+  ['ECOM-SEP-26', '4', 'Dua'].concat(sessRow('BSBA 7A', '1', D1, '16:00', '17:20', [0, 7, 15], FAST).slice(3)),
+  ['BSBA 7A', '22L-1', 'Ezzan', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+];
+reg.shown = reg.raw.map((r) => r.map((v) => v instanceof Date ? 'date' : String(v)));
+reg.raw.forEach((r, i) => { if (i && r[7] instanceof Date) reg.shown[i][7] = dayOf(r[7].getTime()); });
+run('clearRosterCache()');
+// session 1 (two days ago): Bilal's sign-in is in the old Sheet2, under the shared roll no of those days
+ctx.__gas.sheets.Sheet2.raw.push(['x', D2, 'x', '18:32:00', 'SIGN_IN', 'ECOM-SEP-26', 'ECOM-SEP-26', 'Bilal', 1, 2, 3, '', 'D-b', '', 'On Time', '', '', '', '', '', '', '', 'old-b']);
+ctx.__gas.sheets.Sheet2.shown.push(ctx.__gas.sheets.Sheet2.raw[ctx.__gas.sheets.Sheet2.raw.length - 1].map(String));
+const R = (id, roll, name, day, hm, extra) => ev(id, 'SIGN_IN', roll, name, at(hm, day), extra);
+ctx.__r = [
+  R('r1', '1', 'Amna', D2, '18:31'), R('r2', '3', 'Chand', D2, '18:40'),                                   // Present, Fined; Dua never came
+  R('r3', '1', 'Amna', D1, '18:45'), R('r4', '2', 'Bilal', D1, '19:00'), R('r5', '3', 'Chand', D1, '18:30'), // Late, Absent, Present (leaves early)
+  R('r6', '4', 'Dua', D1, '18:29'), ev('r7', 'AUTO_LOGOUT_ABSENT', '4', 'Dua', at('19:10', D1)),            // on time, then out of the area 10 min
+  R('r8', '22L-1', 'Ezzan', D1, '15:59', { section: 'BSBA 7A', lat: FAST[0], lng: FAST[1] }),
+  ev('r10', 'GPS_PING_2MIN', '22L-1', 'Ezzan', at('17:05', D1), { section: 'BSBA 7A', lat: FAST[0], lng: FAST[1] }),
+  ev('r9', 'GPS_PING_2MIN', '1', 'Amna', at('20:10', D1)),                                                 // Amna stays to the end
+];
+res = run('recordAttendanceBatch(__r)');
+assert.ok(Object.values(res.results).every((v) => v === 'ok'), JSON.stringify(res.results));
+const flagMsg = run('updateFlags()');
+assert.ok(/Attendance register: 5 student\(s\) x 4 session\(s\)/.test(flagMsg), 'updateFlags also rebuilds the register: ' + flagMsg);
+const G = ctx.__gas.sheets['Attendance Register'].raw;
+const cols = G[0].length;
+eq(G[0].slice(8), ['BSBA 7A', 'ECOM-SEP-26', 'ECOM-SEP-26', 'ECOM-SEP-26'], 'class header, classes in alphabetical order, sessions by date');
+eq(G[1].slice(8), ['S1', 'S1', 'S2', 'S3'], 'session header');
+const fmtD = (d) => { const [y, m, dd] = d.split('-'); return +dd + '-' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m - 1] + '-' + y; };
+eq(G[2].slice(0, 9), ['Section', 'Roll No', 'Student Name', 'Present', 'Fined', 'Late', 'Absent', 'Left Early', fmtD(D1)]);
+assert.strictEqual(G[2][9], fmtD(D2), 'date header');
+const row = (name) => G.find((r) => r[2] === name);
+eq(row('Amna').slice(3), [1, 0, 1, 0, 0, '', 'Present', 'Late', ''], 'Amna: on time, then 15 min late; tomorrow blank; other class blank');
+eq(row('Bilal').slice(3), [1, 0, 0, 1, 0, '', 'Present', 'Absent', ''], 'Bilal: found in the old Sheet2 by name; 30 min late = Absent');
+eq(row('Chand').slice(3), [1, 1, 0, 0, 1, '', 'Fined', 'Present · Left early', ''], 'Chand: fined; not seen in the last 30 min');
+eq(row('Dua').slice(3), [0, 0, 0, 2, 0, '', 'Absent', 'Absent', ''], 'Dua: never came; then signed out for leaving the area');
+eq(row('Ezzan').slice(3), [1, 0, 0, 0, 0, 'Present', '', '', ''], 'BSBA student: only the BSBA column is filled');
+const bg = ctx.__gas.sheets['Attendance Register'].bg;
+assert.strictEqual(bg[G.indexOf(row('Amna'))][10], '#fce8dc', 'Late is coloured');
+assert.strictEqual(bg[G.indexOf(row('Amna'))][8], '#eef0f2', 'another class\'s session is greyed');
+assert.strictEqual(G.length, 8, '3 header rows + 5 students');
+run('buildRegister()');
+assert.strictEqual(ctx.__gas.sheets['Attendance Register'].raw.length, 8, 'rebuilding replaces, never appends');
+// a past session nobody signed in to (the app was not used that day): "No data", not Absent for all
+const D3 = dayOf(Date.now() - 3 * 86400000);
+reg.raw.push(['', '', ''].concat(sessRow('ECOM-SEP-26', '0', D3, '18:30', '20:30', [5, 10, 20], LUMS).slice(3)));
+reg.shown.push(reg.raw[reg.raw.length - 1].map((v) => v instanceof Date ? D3 : String(v)));
+run('clearRosterCache()');
+run('buildRegister()');
+const G2 = ctx.__gas.sheets['Attendance Register'].raw;
+const amna2 = G2.find((r) => r[2] === 'Amna');
+eq(amna2.slice(3), [1, 0, 1, 0, 0, '', 'No data', 'Present', 'Late', ''], 'unused day shows No data and does not count');
+assert.strictEqual(G2.find((r) => r[2] === 'Dua')[6], 2, 'Dua still has exactly 2 absences');
+console.log('attendance register ok (present / fined / late / absent / never came / left early / future / other class / old Sheet2 rows / unused day)');
+
 console.log('\nALL UNIVERSAL TESTS PASSED');
