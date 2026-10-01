@@ -76,7 +76,7 @@ node tests/load_test.js 200
 
 **Roster tab**
 
-Columns A to M are read by position, exactly as before:
+Every column is found by its header, so columns can be inserted or moved (the live sheet has *Class/Course* at E and *LAT / LONG / Radius* at O–Q). If row 1 has no recognisable headers, columns A to M are read by position, as in this standard layout:
 
 | Col | Content | Col | Content |
 |---|---|---|---|
@@ -88,7 +88,7 @@ Columns A to M are read by position, exactly as before:
 | | | J | End Time |
 | | | K, L, M | Fined / late / absent after this many minutes (e.g. 5, 10, 20), or all three in K as `5,10,20` |
 
-The new columns are found by their header, wherever they are. **Attendance → Add the new Roster columns** adds the missing ones after the last column and fills the defaults into every session row:
+Optional columns. *Class/Course*, *LAT* and *LONG* are recognised as well as the names below. **Attendance → Add the new Roster columns** adds the missing ones after the last column and fills the defaults into every session row:
 
 | Header | Per session row | Default |
 |---|---|---|

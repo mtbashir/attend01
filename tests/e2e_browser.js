@@ -33,11 +33,12 @@ ctx.globalThis = ctx; vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'mock_gas.js'), 'utf8').replace("var TZ = 'Asia/Karachi'", 'var TZ = ' + JSON.stringify(TZ)), ctx);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'Code.gs'), 'utf8'), ctx);
 vm.runInContext(`__setupSheets('${TODAY}')`, ctx);
-const HDR = ['Section', 'Student Roll No', 'Student Name', 'Class Name', 'Session No.', 'Day', 'Session Dates', 'Section', 'Session Start Time',
-  'Session End Time', 'Fine if Delay by Min', 'Late if Delay by Min', 'Absent if Delay by Min', 'Latitude', 'Longitude', 'Radius (m)',
-  'Sign-in Opens (min before start)', 'Check-out Opens (min before end)', 'Early Leaver if Not Seen (min before end)'];
-const sess = (no, sec, start, end, loc, cls) => ['', '', '', cls || '', no, 'x', TODAY, sec, hm(start), hm(end), 5, 10, 20,
-  loc ? loc.latitude : '', loc ? loc.longitude : '', 100, 30, 10, 30];
+// The Roster exactly as the live sheet lays it out: Class/Course at E, LAT / LONG / Radius at O-Q,
+// no Sign-in / Check-out / Early Leaver columns (so the defaults 30 / 10 / 30 apply)
+const HDR = ['Section', 'Student Roll No', 'Student Name', '', 'Class/Course', 'Session No. ', 'Day', 'Session Dates', 'Section', 'Start Time',
+  'End Time', 'Fine if Delay by Min', 'Late if Delay by Min', 'Absent if Delay by Min', 'LAT', 'LONG', 'Radius'];
+const sess = (no, sec, start, end, loc, cls) => ['', '', '', '', cls || sec, no, 'x', TODAY, sec, hm(start), hm(end), 5, 10, 20,
+  loc ? loc.latitude : '', loc ? loc.longitude : '', 100];
 const rows = [
   sess('1', 'ECOM-SEP-26', NOW - 100, NOW + 5, LUMS, 'LUMS ECOM Sep-2026'),   // in its check-out window
   sess('2', 'FUTURE', NOW + 60, NOW + 120, LUMS),                             // sign-in opens in 30 min
