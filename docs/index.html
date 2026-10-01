@@ -974,6 +974,8 @@
         else { s.pingCount = (s.pingCount || 0) + 1; upload = s.pingCount % PING_UPLOAD_EVERY === 0; }
         if (s.earlyFromTs && now >= s.earlyFromTs && !s.seenLate) { s.seenLate = true; upload = true; }
       } else {
+        // class is over: leaving now is going home, not an absence
+        if (s.endTs && now >= s.endTs) { s.lastFix = fix; s.lastDist = dist; saveSession(s); signOut('SESSION_ENDED', now); return; }
         if (!s.outSince) s.outSince = now;
         upload = true;
         if (now - s.outSince >= OUT_OF_RANGE_LOGOUT_MS) { saveSession(s); signOut('AUTO_OUT_OF_BOUNDS'); return; }
