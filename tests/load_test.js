@@ -45,7 +45,9 @@ function events(n, withPhoto) {
 const meter = ctx.__meterReset();
 ctx.__run = (evs) => vm.runInContext('recordAttendanceBatch(__evs)', Object.assign(ctx, { __evs: evs }));
 
-let busy = 0, rows0 = sheet.raw.length;
+// records go to a tab per class per day, so count rows across every log tab
+const logged = () => vm.runInContext('__logRows()', ctx).length;
+let busy = 0, rows0 = logged();
 for (let i = 0; i < STUDENTS; i++) {
   // text records in one call, then the photo in its own call, as the phone sends them
   for (const batch of [events(i, false), [events(i, true)[2]]]) {
@@ -55,7 +57,7 @@ for (let i = 0; i < STUDENTS; i++) {
   }
 }
 
-const rows = sheet.raw.length - rows0;
+const rows = logged() - rows0;
 const perStudent = meter.total / STUDENTS;
 const round = (n) => Math.round(n * 10) / 10;
 

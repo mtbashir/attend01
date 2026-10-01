@@ -4,7 +4,8 @@
   "private": true,
   "description": "Offline-first class sign-in web app for Google Apps Script",
   "scripts": {
-    "test": "node tests/test_server.js",
+    "test": "node tests/test_server.js && node tests/test_universal.js",
+    "e2e": "node tests/e2e_browser.js",
     "load": "node tests/load_test.js 60"
   }
 }
