@@ -241,9 +241,10 @@ eq(G[2].slice(0, 9), ['Section', 'Roll No', 'Student Name', 'Present', 'Fined', 
 assert.strictEqual(G[2][9], fmtD(D2), 'date header');
 const row = (name) => G.find((r) => r[2] === name);
 eq(row('Amna').slice(3), [1, 0, 1, 0, 0, '', 'Present', 'Late', ''], 'Amna: on time, then 15 min late; tomorrow blank; other class blank');
-eq(row('Bilal').slice(3), [1, 0, 0, 1, 0, '', 'Present', 'Absent', ''], 'Bilal: found in the old Sheet2 by name; 30 min late = Absent');
+eq(row('Bilal').slice(3), [1, 0, 0, 1, 0, '', 'Present', 'Absent · 30 min late', ''], 'Bilal: found in the old Sheet2 by name; 30 min late = Absent');
 eq(row('Chand').slice(3), [1, 1, 0, 0, 1, '', 'Fined', 'Present · Left early', ''], 'Chand: fined; not seen in the last 30 min');
-eq(row('Dua').slice(3), [0, 0, 0, 2, 0, '', 'Absent', 'Absent', ''], 'Dua: never came; then signed out for leaving the area');
+eq(row('Dua').slice(3), [1, 0, 0, 1, 1, '', 'Absent · no sign-in', 'Present · Left early (out of area 19:10)', ''],
+  'Dua: never came; then on time but signed out for leaving the area during class = left early, not absent');
 eq(row('Ezzan').slice(3), [1, 0, 0, 0, 0, 'Present', '', '', ''], 'BSBA student: only the BSBA column is filled');
 const bg = ctx.__gas.sheets['Attendance Register'].bg;
 assert.strictEqual(bg[G.indexOf(row('Amna'))][10], '#fce8dc', 'Late is coloured');
@@ -260,7 +261,7 @@ run('buildRegister()');
 const G2 = ctx.__gas.sheets['Attendance Register'].raw;
 const amna2 = G2.find((r) => r[2] === 'Amna');
 eq(amna2.slice(3), [1, 0, 1, 0, 0, '', 'No data', 'Present', 'Late', ''], 'unused day shows No data and does not count');
-assert.strictEqual(G2.find((r) => r[2] === 'Dua')[6], 2, 'Dua still has exactly 2 absences');
+assert.strictEqual(G2.find((r) => r[2] === 'Dua')[6], 1, 'Dua still has exactly 1 absence');
 console.log('attendance register ok (present / fined / late / absent / never came / left early / future / other class / old Sheet2 rows / unused day)');
 
 // ---------------------------------------------------------------- 7. spreadsheet set to US Pacific time (the live sheet is)

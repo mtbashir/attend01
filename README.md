@@ -11,7 +11,7 @@ The student enters a roll number. Name and section fill in from a roster saved o
 
 It then works out on the spot whether they are on time, fined, late or absent, and puts the record into a local queue (IndexedDB, with a localStorage fallback). The server works the status and the distance out again when the record arrives; a sign-in that matches no session is recorded as **No session found**, never as On Time.
 
-While the session is open, the phone checks the student's location every 2 minutes. Leaving the area and coming back are recorded straight away. After 10 minutes outside, the student is signed out and marked absent.
+While the session is open, the phone checks the student's location every 2 minutes. Leaving the area and coming back are recorded straight away. After 10 minutes outside, the student is signed out and counted as leaving early (GPS indoors can drift, so this never turns a student who came into an absentee).
 
 **Check-out.** A *Check out* button appears in the last 10 minutes of class (Roster: *Check-out Opens*) and stays until 30 minutes after the end. It needs a location inside the classroom area, like sign-in. Until then the page says when check-out opens.
 
@@ -116,7 +116,7 @@ Give every student their own roll number. Two students sharing one are kept apar
 
 **Attendance Register tab**
 
-One row per student in the Roster, one column per session. The three header rows give the class, the session number and the date. Each cell holds that student's status: **Present**, **Fined**, **Late** (late and fined) or **Absent**. Absent covers signing in after the absent limit, being signed out for leaving the area, and never signing in to a session that is over. *· Left early* is added when the Early Leaver flag is Yes. Columns D to H total each student's Present, Fined, Late, Absent and Left Early.
+One row per student in the Roster, one column per session. The three header rows give the class, the session number and the date. Each cell holds that student's status: **Present**, **Fined**, **Late** (late and fined) or **Absent**, with the reason for an absence: *Absent · 25 min late* or *Absent · no sign-in*. *· Left early* is added when the Early Leaver flag is Yes, and *· Left early (out of area 19:12)* when the page signed the student out for 10 minutes outside the area during class (counted as leaving early, not absent). Columns D to H total each student's Present, Fined, Late, Absent and Left Early.
 
 - A session still to come is blank.
 - A session of another class is grey.

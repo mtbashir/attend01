@@ -457,7 +457,6 @@
     fillList('rollNoList', rolls);
     fillList('namesList', Object.keys(names));
     fillList('sectionsList', Object.keys(sections).sort());
-    $('totalStudentsCount').textContent = rosterTotal();
     renderRosterHint();
     renderDay();
   }
@@ -469,7 +468,9 @@
     if (!roster) {
       el.textContent = 'No class list on this phone yet. It downloads the next time this page opens with signal.';
     } else {
-      el.textContent = 'Class list saved on this phone: ' + plural(rosterTotal(), 'student') +
+      var sec = val('sectionInput'), n = rosterCount(sec);
+      el.textContent = 'Class list saved on this phone' +
+        (sec && n !== null ? ': ' + plural(n, 'student') + ' in ' + className(sec) : '') +
         (roster.savedAt ? ', updated ' + when(roster.savedAt) : '') + '.';
     }
   }
@@ -943,7 +944,7 @@
       var left = Math.max(0, Math.ceil((OUT_OF_RANGE_LOGOUT_MS - (Date.now() - s.outSince)) / 60000));
       el.className = 'ping bad';
       el.textContent = 'You are outside the class area (' + s.lastDist + ' m). Go back within ' + left +
-        ' min or you will be signed out and marked absent.';
+        ' min or you will be signed out and counted as leaving early.';
       return;
     }
     el.className = 'ping';
@@ -997,7 +998,7 @@
     Store.get('daylog', s.dayKey).then(function (row) {
       if (!row) return;
       row.logoutTime = localHM(ts);
-      if (auto) { row.absent = true; row.onTime = false; }
+      if (auto) row.leftEarly = true;   // counted as leaving early, not absent
       return Store.put('daylog', row);
     }).then(renderDay, function () {});
 
@@ -1008,7 +1009,7 @@
     $('attendanceForm').reset();
     showLogin();
     renderRosterHint();
-    if (auto) say('Signed out automatically: you were outside the class area for 10 minutes. Marked absent.', 'bad');
+    if (auto) say('Signed out automatically: you were outside the class area for 10 minutes. This counts as leaving class early.', 'bad');
     else if (reason === 'CHECK_OUT') say('Checked out at ' + localHM(ts) + '.', 'ok');
     else if (reason === 'SESSION_ENDED') say('Class ended at ' + localHM(ts) + '. You did not check out.', 'bad');
     else if (reason === 'SESSION_EXPIRED') say('Your last session was left open and has been closed at ' + when(ts) + '.');
@@ -1318,7 +1319,7 @@
   /** Which class the figures are about: the open session, else the last one used on this phone. */
   function summaryScope() {
     var s = loadSession();
-    return (s && s.section) || lsGet(K.lastSection) || '';
+    return (s && s.section) || val('sectionInput') || lsGet(K.lastSection) || '';
   }
 
   function savedSummary() {
@@ -1347,12 +1348,13 @@
     }, function () { /* keep showing the last figures */ });
   }
 
+  /** Students in one class. No class chosen yet: null, so the tiles never show the whole roster. */
   function rosterCount(section) {
-    if (!roster) return 0;
-    if (!section || !roster.students.length) return rosterTotal();
+    if (!roster || !section) return null;
+    if (!roster.students.length) return roster.totalStudents || null;   // old saved copy without the list
     var n = 0;
     roster.students.forEach(function (st) { if (norm(st[2]) === norm(section)) n++; });
-    return n || rosterTotal();
+    return n;
   }
 
   function renderDay() {
@@ -1395,11 +1397,13 @@
       var present = list.length - marked;
       var total = rosterCount(scope);
 
-      $('totalStudentsCount').textContent = total;
-      $('presentStudentsCount').textContent = present;
-      $('finedStudentsCount').textContent = list.filter(function (r) { return r.status === 'Fined' || r.status === 'Late'; }).length;
-      $('lateStudentsCount').textContent = list.filter(function (r) { return r.status === 'Late'; }).length;
-      $('absentStudentsCount').textContent = total ? Math.max(total - present, 0) : marked;
+      // every figure is for the one class in scope; no class yet: dashes, never the whole roster
+      var dash = total === null;
+      $('totalStudentsCount').textContent = dash ? '–' : total;
+      $('presentStudentsCount').textContent = dash ? '–' : present;
+      $('finedStudentsCount').textContent = dash ? '–' : list.filter(function (r) { return r.status === 'Fined' || r.status === 'Late'; }).length;
+      $('lateStudentsCount').textContent = dash ? '–' : list.filter(function (r) { return r.status === 'Late'; }).length;
+      $('absentStudentsCount').textContent = dash ? '–' : total ? Math.max(total - present, 0) : marked;
 
       $('dayScope').textContent = scopeLine(scope, summary);
 
@@ -1460,6 +1464,7 @@
     if (hits.length === 1) {
       $('studentNameInput').value = hits[0][1];
       if (hits[0][2]) $('sectionInput').value = hits[0][2];
+      renderDay(); refreshSummary(false);
       renderRosterHint('Found in the class list.');
     } else if (hits.length > 1) {
       // a shared roll no: never guess which student this is
@@ -1473,6 +1478,12 @@
     } else {
       renderRosterHint();
     }
+  }
+
+  /** The figures follow the class typed or filled in: its own roster count, its own sign-ins. */
+  function onSectionChange() {
+    renderGpsLine();
+    if (!loadSession()) { renderRosterHint(); renderDay(); refreshSummary(false); }
   }
 
   function onNameChange() {
@@ -1492,7 +1503,8 @@
     $('photoBtn').addEventListener('click', savePhoto);
     $('signOutBtn').addEventListener('click', function () { signOut('MANUAL_LOGOUT'); });
     $('checkoutBtn').addEventListener('click', checkOut);
-    $('sectionInput').addEventListener('change', renderGpsLine);
+    $('sectionInput').addEventListener('change', onSectionChange);
+    $('sectionInput').addEventListener('input', onSectionChange);
     $('syncBtn').addEventListener('click', onSyncButton);
 
     window.addEventListener('online', function () { sync.failures = 0; renderSync(); runSync(false); refreshRoster(false); refreshSummary(false); });
