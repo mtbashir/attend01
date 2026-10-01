@@ -7,6 +7,11 @@
     new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'long', hourCycle: 'h23' })
       .formatToParts(d).forEach(function (p) { parts[p.type] = p.value; });
+    if (pattern === 'Z') {
+      var off = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' }).formatToParts(d)
+        .filter(function (p) { return p.type === 'timeZoneName'; })[0].value.replace('GMT', '');
+      return off ? off.replace(':', '') : '+0000';
+    }
     return pattern.replace('yyyy', parts.year).replace('MM', parts.month).replace('dd', parts.day)
       .replace('EEEE', parts.weekday).replace('HH', parts.hour).replace('mm', parts.minute).replace('ss', parts.second);
   }

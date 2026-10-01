@@ -112,6 +112,7 @@ Give every student their own roll number. Two students sharing one are kept apar
 | Update early-leaver and shared-phone flags now | Fills the four flag columns for classes that have ended |
 | Update flags automatically every 15 min | Turns on a timer that does the above. Do this once |
 | Update the attendance register now | Rebuilds the *Attendance Register* tab (also rebuilt every 15 minutes by the timer) |
+| Open the Corrections tab | Where you set a student's status by hand (see below) |
 | Send Roster changes to phones now | Phones pick up Roster edits within 5 minutes anyway |
 
 **Attendance Register tab**
@@ -123,6 +124,20 @@ One row per student in the Roster, one column per session. The three header rows
 - A past session nobody in the class signed in to shows **No data** (the app was not used that day) and is left out of the totals.
 
 The tab is rebuilt from the log tabs every time, so anything typed into it is overwritten. Rows recorded before the per-class tabs, in `Sheet2`, are included, matched by name when their roll number is not the student's.
+
+**Corrections tab**
+
+For students who could not sign in (dead phone, location blocked, no GPS indoors) or any other status you need to set by hand. Created automatically, one row per correction:
+
+| Date | Section | Roll No | Student Name | Session No | Status | Note |
+|---|---|---|---|---|---|---|
+| 22-Sep-2026 | ECOM-SEP-26 | 1 | | | Present | Phone died |
+
+- **Status** is Present, Fined, Late or Absent (P, F, L, A also work; there is a drop-down).
+- **Section** can be left blank when the roll no is unique; **Student Name** can be used instead of the roll no, with a section.
+- **Session No** is only needed when a class meets twice on the same day.
+- A correction replaces the app's record for that student and session, shows as e.g. *Present · corrected*, and counts in the totals. It also works on a "No data" day.
+- Rows that cannot be applied (unknown roll no, no session that day, unreadable status) are listed under the register with the reason.
 
 **One tab per class per day**
 
