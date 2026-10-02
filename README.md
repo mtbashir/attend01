@@ -15,7 +15,18 @@ While the session is open, the phone checks the student's location every 2 minut
 
 **Check-out.** A *Check out* button appears in the last 10 minutes of class (Roster: *Check-out Opens*) and stays until 30 minutes after the end. It needs a location inside the classroom area, like sign-in. Until then the page says when check-out opens.
 
-**Early leavers and shared phones.** Once a class has ended (plus 15 minutes for late uploads), the server fills four columns on each sign-in row: *Checked Out*, *Last Seen In Class*, *Early Leaver* (not seen inside the area in the last 30 minutes of class; Roster: *Early Leaver if Not Seen*) and *Shared Device* (one phone signed in several students that day; flagged, never blocked). A check-out counts as being seen.
+**Early leavers and shared phones.** Once a class has ended (plus 15 minutes for late uploads), the server fills four columns on each sign-in row: *Checked Out*, *Last Seen In Class*, *Early Leaver* (see below) and *Shared Device* (one phone signed in several students that day; flagged, never blocked). A check-out counts as being seen.
+
+*Early Leaver* is only set on evidence, because phones report their location only while the page is open and the screen is on:
+
+| Early Leaver | Meaning | In the register |
+|---|---|---|
+| Yes: signed out 19:40 | Pressed Sign out before check-out opened and was not seen inside again | *· Left early (signed out 19:40)* |
+| Yes: out of area 19:40 | The phone's last location before check-out opened was outside the area | *· Left early (out of area 19:40)* |
+| No | Checked out, or seen inside in the last 30 minutes (Roster: *Early Leaver if Not Seen*) | nothing |
+| Not seen at end | The phone went quiet (page closed, screen locked): no evidence either way | nothing |
+
+A Sign out does not count as leaving when it happens during the sign-in rush (before the Absent limit, e.g. 20 minutes after the start) or when another student signs in on the same phone within 5 minutes (the phone was handed on). A Sign out inside the area counts as being seen; the page takes a fresh location when Sign out is pressed.
 
 A web page cannot read the location while it is closed or the screen is off. So a student who keeps the page closed and does not check out is flagged as an early leaver even if they stayed. Tell students to check out: it is what keeps them off the list.
 
@@ -111,19 +122,18 @@ Give every student their own roll number. Two students sharing one are kept apar
 | Add the new Roster columns | Adds the columns above and fills the defaults. Running it again adds nothing |
 | Update early-leaver and shared-phone flags now | Fills the four flag columns for classes that have ended |
 | Update flags automatically every 15 min | Turns on a timer that does the above. Do this once |
-| Update the attendance register now | Rebuilds the *Attendance Register* tab (also rebuilt every 15 minutes by the timer) |
+| Update the attendance registers now | Rebuilds the register tab of every class (also rebuilt every 15 minutes by the timer) |
 | Open the Corrections tab | Where you set a student's status by hand (see below) |
 | Send Roster changes to phones now | Phones pick up Roster edits within 5 minutes anyway |
 
-**Attendance Register tab**
+**Register tabs, one per class**
 
-One row per student in the Roster, one column per session. The three header rows give the class, the session number and the date. Each cell holds that student's status: **Present**, **Fined**, **Late** (late and fined) or **Absent**, with the reason for an absence: *Absent · 25 min late* or *Absent · no sign-in*. *· Left early* is added when the Early Leaver flag is Yes, and *· Left early (out of area 19:12)* when the page signed the student out for 10 minutes outside the area during class (counted as leaving early, not absent). Columns D to H total each student's Present, Fined, Late, Absent and Left Early.
+Each class has its own tab, named *Register* and the class, for example `Register ECOM-SEP-26`, `Register BSBA 7A`. (The old all-classes *Attendance Register* tab is removed the first time these are built.) One row per student of that class in the Roster, one column per session of that class. The three header rows give the class, the session number and the date. Each cell holds that student's status: **Present**, **Fined**, **Late** (late and fined) or **Absent**, with the reason for an absence: *Absent · 25 min late* or *Absent · no sign-in*. *· Left early (signed out 19:40)* or *· Left early (out of area 19:40)* is added when the Early Leaver flag says so, or when the page signed the student out for 10 minutes outside the area during class (counted as leaving early, not absent). Columns D to H total each student's Present, Fined, Late, Absent and Left Early.
 
 - A session still to come is blank.
-- A session of another class is grey.
 - A past session nobody in the class signed in to shows **No data** (the app was not used that day) and is left out of the totals.
 
-The tab is rebuilt from the log tabs every time, so anything typed into it is overwritten. Rows recorded before the per-class tabs, in `Sheet2`, are included, matched by name when their roll number is not the student's.
+The tabs are rebuilt from the log tabs every time, so anything typed into it is overwritten. Rows recorded before the per-class tabs, in `Sheet2`, are included, matched by name when their roll number is not the student's.
 
 **Corrections tab**
 
@@ -137,7 +147,7 @@ For students who could not sign in (dead phone, location blocked, no GPS indoors
 - **Section** can be left blank when the roll no is unique; **Student Name** can be used instead of the roll no, with a section.
 - **Session No** is only needed when a class meets twice on the same day.
 - A correction replaces the app's record for that student and session, shows as e.g. *Present · corrected*, and counts in the totals. It also works on a "No data" day.
-- Rows that cannot be applied (unknown roll no, no session that day, unreadable status) are listed under the register with the reason.
+- Rows that cannot be applied (unknown roll no, no session that day, unreadable status) are listed under that class's register with the reason (on every class's tab when the class cannot be told).
 
 **One tab per class per day**
 

@@ -109,6 +109,7 @@
           sheetOrder.splice(index === undefined ? sheetOrder.length : index, 0, name);
           return sh;
         },
+        deleteSheet: function (sh) { delete sheets[sh.getName()]; sheetOrder.splice(sheetOrder.indexOf(sh.getName()), 1); },
         getSpreadsheetTimeZone: function () { return G.__gas.ssTz || TZ; }
       };
     },
