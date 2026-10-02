@@ -989,6 +989,26 @@
     });
   }
 
+  /**
+   * Sign out pressed: take a fresh location first (a few seconds at most), so the record shows where
+   * the student was when they left, not where the last 2-minute check found them. No fix: sign out anyway.
+   */
+  function manualSignOut() {
+    var s = loadSession();
+    if (!s) return showLogin();
+    var btn = $('signOutBtn'), pressedAt = Date.now(), done = false;
+    btn.disabled = true;
+    var finish = function () { if (done) return; done = true; btn.disabled = false; signOut('MANUAL_LOGOUT', pressedAt); };
+    var loc = sessionLoc(s);
+    if (!loc || !navigator.geolocation) return finish();
+    setTimeout(finish, 9000);
+    getFix(30000, 8000).then(function (fix) {
+      var cur = loadSession();
+      if (!done && cur) { cur.lastFix = fix; cur.lastDist = distanceTo(fix, loc); saveSession(cur); }
+      finish();
+    }, finish);
+  }
+
   function signOut(reason, atTs) {
     var s = loadSession();
     if (!s) return showLogin();
@@ -1501,7 +1521,7 @@
     $('rollNoInput').addEventListener('input', onRollInput);
     $('studentNameInput').addEventListener('change', onNameChange);
     $('photoBtn').addEventListener('click', savePhoto);
-    $('signOutBtn').addEventListener('click', function () { signOut('MANUAL_LOGOUT'); });
+    $('signOutBtn').addEventListener('click', manualSignOut);
     $('checkoutBtn').addEventListener('click', checkOut);
     $('sectionInput').addEventListener('change', onSectionChange);
     $('sectionInput').addEventListener('input', onSectionChange);

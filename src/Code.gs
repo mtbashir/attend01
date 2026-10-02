@@ -30,7 +30,8 @@ var CONFIG = {
   // The time zone the classes run in. Sign-in times, dates and lateness are worked out in it,
   // whatever the spreadsheet's own setting (File > Settings) says. Blank = the spreadsheet's setting.
   TIME_ZONE: 'Asia/Karachi',
-  REGISTER_SHEET: 'Attendance Register',   // every student x every session, rebuilt by buildRegister()
+  REGISTER_PREFIX: 'Register ',            // one tab per class, e.g. "Register ECOM-SEP-26", rebuilt by buildRegister()
+  REGISTER_SHEET: 'Attendance Register',   // the old all-classes tab: removed when the class tabs are built
   CORRECTIONS_SHEET: 'Corrections',         // statuses you set by hand; they win over the app's record
   PHOTO_FOLDER: 'Classroom Attendance Photos',
   PHOTO_PUBLIC_LINK: false,     // true = anyone with the link can open student photos (old behaviour)
@@ -44,6 +45,7 @@ var CONFIG = {
   DEFAULT_EARLY_MIN: 30,        // no location in this many last minutes of class = early leaver
   CHECKOUT_GRACE_MIN: 30,       // check-out is still accepted this long after the end
   FLAG_DELAY_MIN: 15,           // flags are worked out this long after a class ends, so late uploads count
+  HANDOVER_MIN: 5,              // a Sign out followed within this long by another student signing in on that phone is a handover
   FLAG_DAYS_BACK: 2,            // updateFlags() revisits today and yesterday, for phones that upload late
   GPS_TOLERANCE_MAX: 30,        // metres of reported GPS error forgiven at the edge of the area
   ROSTER_CACHE_SECONDS: 300,    // roster edits reach phones within 5 min (instantly when edited by hand, see onEdit)
@@ -851,8 +853,17 @@ function collectSignIns_(vals, day, sec, byRoll) {
  * Fills X to AA on each sign-in row once its class has ended (plus FLAG_DELAY_MIN):
  *   X Checked Out         "Yes 20:25" or "No"
  *   Y Last Seen In Class  last time the phone reported a location inside the classroom area
- *   Z Early Leaver        "Yes" when the student was not seen inside in the last N minutes
- *                         (Roster column "Early Leaver if Not Seen"); blank for absentees
+ *   Z Early Leaver        only on evidence that the student left before check-out opened:
+ *                           "Yes: signed out 19:40"   pressed Sign out, and was not seen inside again
+ *                                                     (not counted: a Sign out before the Absent limit,
+ *                                                     or one followed by another student signing in
+ *                                                     on the same phone - the phone was handed on)
+ *                           "Yes: out of area 19:40"  the phone's last location before check-out
+ *                                                     opened was outside the area
+ *                         "Not seen at end" when the phone just went quiet (page closed, screen
+ *                         locked): not counted as leaving early, since phones only report while
+ *                         the page is open. "No" when seen inside in the last N minutes (Roster
+ *                         column "Early Leaver if Not Seen") or checked out. Blank for absentees.
  *   AA Shared Device      "Yes: N students" when one phone signed in several students that day
  * Runs every 15 minutes once "Update flags automatically" is chosen in the Attendance menu,
  * and looks back FLAG_DAYS_BACK days, so records uploaded late still count. Safe to run any time.
@@ -906,14 +917,19 @@ function updateFlags() {
 
 /** Works out X to AA for one tab's rows (display values, columns A..AA). */
 function flagsFor_(vals, timetable, day, nowMin, byDevice) {
-  var events = {};   // student -> [{ t, type, dist, acc }]
+  var events = {};   // student -> [{ t, type, dist, acc, dev }]
+  var phoneSignIns = {};   // phone -> [{ t, who }]: to spot a phone handed to the next student
   vals.forEach(function (r) {
     var t = timeMin_(r[3]);
     if (t === null) return;
-    (events[studentKey_(r[5], r[7])] = events[studentKey_(r[5], r[7])] || []).push({
-      t: t, type: text_(r[4]), dist: Number(r[10]), acc: Number(r[19]) || 0
-    });
+    var who = studentKey_(r[5], r[7]), dev = text_(r[12]);
+    (events[who] = events[who] || []).push({ t: t, type: text_(r[4]), dist: Number(r[10]), acc: Number(r[19]) || 0, dev: dev });
+    if (dev && text_(r[4]) === 'SIGN_IN') (phoneSignIns[dev] = phoneSignIns[dev] || []).push({ t: t, who: who });
   });
+  // signed out so someone else could sign in on the same phone (within HANDOVER_MIN), not to leave
+  var handedOver = function (who, e) {
+    return (phoneSignIns[e.dev] || []).some(function (x) { return x.who !== who && x.t >= e.t && x.t <= e.t + CONFIG.HANDOVER_MIN; });
+  };
 
   var firstSignIn = {}, changed = 0;
   var rows = vals.map(function (r) {
@@ -939,21 +955,39 @@ function flagsFor_(vals, timetable, day, nowMin, byDevice) {
     if (w && w.end !== null && nowMin >= w.end + CONFIG.FLAG_DELAY_MIN) {
       var until = w.end + CONFIG.CHECKOUT_GRACE_MIN;
       var limit = (isFinite(s.radius) ? s.radius : CONFIG.DEFAULT_RADIUS_M);
-      var checkout = null, lastSeen = null;
-      (events[who] || []).forEach(function (e) {
-        if (e.t < w.open || e.t > until || !SEEN_TYPES[e.type]) return;
-        // inside the area, allowing for reported GPS error as the phone does; no location set: any report counts
-        var inside = (s.lat === null || s.lng === null) ||
-                     (isFinite(e.dist) && e.dist - Math.min(e.acc, CONFIG.GPS_TOLERANCE_MAX) <= limit);
-        if (!inside) return;
-        if (e.type === 'CHECK_OUT' && (checkout === null || e.t > checkout)) checkout = e.t;
-        if (lastSeen === null || e.t > lastSeen) lastSeen = e.t;
+      var noArea = s.lat === null || s.lng === null;
+      // inside the area, allowing for reported GPS error as the phone does; no location set: any report counts
+      var insideOf = function (e) {
+        return noArea || (isFinite(e.dist) && e.dist - Math.min(e.acc, CONFIG.GPS_TOLERANCE_MAX) <= limit);
+      };
+      var outsideOf = function (e) {       // a real location, clearly outside
+        return !noArea && isFinite(e.dist) && e.dist > 0 && e.dist - Math.min(e.acc, CONFIG.GPS_TOLERANCE_MAX) > limit;
+      };
+      var checkoutOpens = w.end - (isFinite(s.checkoutMin) ? s.checkoutMin : CONFIG.DEFAULT_CHECKOUT_MIN);
+      // the sign-in rush (until the Absent limit): a Sign out then is a slip or a phone handed on, not leaving
+      var rushEnds = w.start + (s.rules || CONFIG.DEFAULT_RULES)[2];
+      var checkout = null, lastSeen = null, leftAt = null, leftHow = '';
+      (events[who] || []).slice().sort(function (a, b) { return a.t - b.t; }).forEach(function (e) {
+        if (e.t < w.open || e.t > until) return;
+        var leaving = e.type === 'MANUAL_LOGOUT' && e.t < checkoutOpens && e.t > rushEnds && !handedOver(who, e);
+        if (leaving) { leftAt = e.t; leftHow = 'signed out'; return; }
+        // a Sign out inside the area (during the rush, handing the phone on, or once check-out is open) shows they were there
+        if ((SEEN_TYPES[e.type] || e.type === 'MANUAL_LOGOUT') && insideOf(e)) {
+          if (e.type === 'CHECK_OUT' && (checkout === null || e.t > checkout)) checkout = e.t;
+          if (lastSeen === null || e.t > lastSeen) lastSeen = e.t;
+          if (leftAt !== null && e.t >= leftAt) { leftAt = null; leftHow = ''; }   // came back after leaving
+          return;
+        }
+        if (e.t >= checkoutOpens) return;                             // leaving once check-out is open is fine
+        if (e.type === 'AUTO_LOGOUT_ABSENT' || (e.type !== 'MANUAL_LOGOUT' && outsideOf(e))) { leftAt = e.t; leftHow = 'out of area'; }
       });
       var absent = !!text_(r[17]);
       var early = isFinite(s.earlyMin) ? s.earlyMin : CONFIG.DEFAULT_EARLY_MIN;
       out[0] = checkout !== null ? 'Yes ' + hm_(checkout) : 'No';
       out[1] = lastSeen !== null ? hm_(lastSeen) : '';
-      out[2] = absent ? '' : (lastSeen === null || lastSeen < w.end - early ? 'Yes' : 'No');
+      out[2] = absent ? '' :
+               leftAt !== null && checkout === null ? 'Yes: ' + leftHow + ' ' + hm_(leftAt) :
+               checkout !== null || (lastSeen !== null && lastSeen >= w.end - early) ? 'No' : 'Not seen at end';
     }
     if (out.join('|') !== keep.map(text_).join('|')) changed++;
     return out;
@@ -981,23 +1015,27 @@ var NO_DATA = 'No data';
 var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /**
- * Rebuilds the "Attendance Register" tab: one row per student in the Roster, one column per
- * session (headed by class, session no and date), and in each cell that student's status:
+ * Rebuilds one register tab per class ("Register ECOM-SEP-26", "Register BSBA 7A", ...): one row
+ * per student of that class in the Roster, one column per session of that class (headed by class,
+ * session no and date), and in each cell that student's status:
  *   Present   signed in on time
  *   Fined     signed in after the fine limit
  *   Late      signed in after the late limit (also fined)
  *   Absent    signed in after the absent limit ("Absent · 25 min late"), or never signed in once
  *             the session is over ("Absent · no sign-in")
- * " · Left early" is added when the Early Leaver flag is Yes, and " · Left early (out of area 19:12)"
- * when the page signed the student out for 10 minutes outside the area during class. A session still to come is blank;
- * a session of another class is greyed. A past session that nobody in the class signed in to
- * shows "No data" (the app was not used that day), not Absent, and is left out of the totals. Totals per student are in columns D to H.
+ * " · Left early (signed out 19:40)" or " · Left early (out of area 19:40)" is added when there is
+ * evidence the student left before check-out opened (Early Leaver flag "Yes: ..."), or when the page
+ * signed them out for 10 minutes outside the area during class. A phone that just went quiet
+ * ("Not seen at end") does not count. A session still to come is blank. A past session that nobody
+ * in the class signed in to shows "No data" (the app was not used that day), not Absent, and is left
+ * out of the totals. Totals per student are in columns D to H.
  * A row in the Corrections tab (date, section, roll no, status) replaces the app's record for that
  * student and session: the cell shows e.g. "Present · corrected" and counts in the totals.
  * Below the students, sign-ins whose roll no and name match nobody in the Roster are listed,
  * so a misspelt name can be corrected in the Roster.
+ * The old all-classes "Attendance Register" tab is removed.
  * Runs with updateFlags() (every 15 minutes once turned on) and from the Attendance menu.
- * Everything in the tab is rewritten each time, so do not type into it.
+ * Everything in these tabs is rewritten each time, so do not type into them.
  */
 function buildRegister() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1139,7 +1177,9 @@ function buildRegister() {
       cur.word = text_(r[17]) ? 'Absent' : text_(r[16]) ? 'Late' : text_(r[15]) ? 'Fined' : 'Present';
       var late = /^\+(\d+)/.exec(text_(r[13]));                // N "+25 mins"
       cur.why = cur.word === 'Absent' && late ? late[1] + ' min late' : '';
-      cur.leftEarly = text_(r[25]) === 'Yes';
+      // Z "Yes: signed out 19:40" / "Yes: out of area 19:40"; "Not seen at end" is not leaving early
+      var left = /^Yes:\s*(.+)$/.exec(text_(r[25]));
+      cur.leftEarly = left ? left[1] : '';
       out[st.i] = cur;
     });
     return out;
@@ -1157,11 +1197,11 @@ function buildRegister() {
   });
   readCorrections_(ss, sheetTz).forEach(function (c) {
     var where = 'Corrections row ' + c.row;
-    if (c.problem) { corrIssues.push([where, c.problem]); return; }
+    if (c.problem) { corrIssues.push([where, c.problem, text_(c.section).toLowerCase()]); return; }
     var sec = c.section.toLowerCase(), st = null;
     if (c.roll) st = sec ? bySec[sec + '|' + c.roll.toLowerCase()] : byRollAny[c.roll.toLowerCase()];
     if (!st && c.name && sec) st = byNameSec[sec + '|' + c.name.toLowerCase()];
-    if (!st) { corrIssues.push([where, 'no student with roll no "' + c.roll + '"' + (c.section ? ' in ' + c.section : '') + (c.name ? ' / name "' + c.name + '"' : '')]); return; }
+    if (!st) { corrIssues.push([where, 'no student with roll no "' + c.roll + '"' + (c.section ? ' in ' + c.section : '') + (c.name ? ' / name "' + c.name + '"' : ''), text_(c.section).toLowerCase()]); return; }
     var hit = 0;
     sessions.forEach(function (t, j) {
       if (t.date !== c.date || t.section.toLowerCase() !== text_(st.section).toLowerCase()) return;
@@ -1169,102 +1209,128 @@ function buildRegister() {
       corrMap[j + '|' + st.i] = c;
       hit++;
     });
-    if (!hit) corrIssues.push([where, 'no session of ' + st.section + ' on ' + c.date + (c.sessionNo ? ' (session ' + c.sessionNo + ')' : '')]);
+    if (!hit) corrIssues.push([where, 'no session of ' + st.section + ' on ' + c.date + (c.sessionNo ? ' (session ' + c.sessionNo + ')' : ''), text_(st.section).toLowerCase()]);
   });
 
-  // ---- the grid ----
-  var nFixed = REGISTER_FIXED.length;
-  var head1 = REGISTER_FIXED.map(function (h, c) { return c === 2 ? 'Class' : ''; });
-  var head2 = REGISTER_FIXED.map(function (h, c) { return c === 2 ? 'Session' : ''; });
-  var head3 = REGISTER_FIXED.slice();
-  sessions.forEach(function (t) {
-    head1.push(classNames[t.section.toLowerCase()] || t.section);
-    head2.push('S' + t.sessionNo);
-    var d = t.date.split('-');
-    head3.push(+d[2] + '-' + MONTHS[+d[1] - 1] + '-' + d[0]);
-  });
-  var values = [head1, head2, head3];
-  var colors = [head1.map(function () { return '#f4f6f8'; }), head2.map(function () { return '#f4f6f8'; }), head3.map(function () { return '#f4f6f8'; })];
-
-  students.forEach(function (st) {
-    var counts = { Present: 0, Fined: 0, Late: 0, Absent: 0, early: 0 };
-    var cells = [], cellColors = [];
-    sessions.forEach(function (t, j) {
-      if (t.section.toLowerCase() !== text_(st.section).toLowerCase()) { cells.push(''); cellColors.push(REGISTER_COLORS.other); return; }
-      var fix = corrMap[j + '|' + st.i];
-      if (fix) {                                            // set by hand in the Corrections tab
-        counts[fix.status]++;
-        cells.push(fix.status + ' · corrected');
-        cellColors.push(REGISTER_COLORS[fix.status]);
-        return;
-      }
-      var w = windowOf_(t);
-      var over = t.date < today || (t.date === today && nowMin > (w.end !== null ? w.end : w.start + CONFIG.DEFAULT_RULES[2]));
-      if (over && !status[j].any) { cells.push(NO_DATA); cellColors.push(REGISTER_COLORS.noData); return; }
-      var s = status[j][st.i];
-      var word = '', why = '', early = '';
-      if (s && s.signedIn) {
-        word = s.word;
-        why = s.why;
-        // Signed out for 10 minutes outside the area during class: they came, then left (or GPS
-        // drifted indoors). Counted as leaving early, never as absent.
-        if (s.autoAbsent && word !== 'Absent') early = 'Left early' + (s.outAt !== null && s.outAt !== undefined ? ' (out of area ' + hm_(s.outAt) + ')' : '');
-        else if (s.leftEarly && word !== 'Absent') early = 'Left early';
-      } else if (over || (s && s.autoAbsent)) {
-        word = 'Absent'; why = 'no sign-in';                // never signed in to a session that is over
-      }
-      if (!word) { cells.push(''); cellColors.push(REGISTER_COLORS.none); return; }
-      counts[word]++;
-      if (early) counts.early++;
-      cells.push(word + (why ? ' · ' + why : '') + (early ? ' · ' + early : ''));
-      cellColors.push(REGISTER_COLORS[word]);
-    });
-    values.push([st.section, st.roll, st.name, counts.Present, counts.Fined, counts.Late, counts.Absent, counts.early].concat(cells));
-    colors.push(REGISTER_FIXED.map(function () { return '#ffffff'; }).concat(cellColors));
-  });
-
-  // Corrections that could not be applied, with the reason, so they can be put right
-  if (corrIssues.length) {
-    var w2 = values[0].length;
-    var pad2 = function (row) { while (row.length < w2) row.push(''); return row; };
-    var white = function () { var c = []; for (var x = 0; x < w2; x++) c.push('#ffffff'); return c; };
-    values.push(pad2([])); colors.push(white());
-    values.push(pad2(['', '', 'Corrections not applied (' + corrIssues.length + ')', 'Why']));
-    colors.push(white().map(function (c, x) { return x < 4 ? '#f4f6f8' : c; }));
-    corrIssues.forEach(function (ci) { values.push(pad2(['', '', ci[0], ci[1]])); colors.push(white()); });
+  // ---- one tab per class: "Register <class>" ----
+  var classes = [], classByKey = {};
+  function addClass(section) {
+    var k = text_(section).toLowerCase();
+    if (!k || classByKey[k]) return;
+    classByKey[k] = { key: k, section: text_(section), sessions: [], students: [] };
+    classes.push(classByKey[k]);
   }
+  sessions.forEach(function (t, j) { addClass(t.section); classByKey[t.section.toLowerCase()].sessions.push(j); });
+  students.forEach(function (st) { addClass(st.section); classByKey[text_(st.section).toLowerCase()].students.push(st); });
+  classes.sort(function (a, b) { return a.key < b.key ? -1 : a.key > b.key ? 1 : 0; });
 
-  // Sign-ins that could not be matched to a Roster student (name or roll no typed differently,
-  // or a student missing from the Roster), so they can be put right in the Roster
-  if (unmatched.length) {
+  var written = [];
+  classes.forEach(function (cls, ci) {
+    var head1 = REGISTER_FIXED.map(function (h, c) { return c === 2 ? 'Class' : ''; });
+    var head2 = REGISTER_FIXED.map(function (h, c) { return c === 2 ? 'Session' : ''; });
+    var head3 = REGISTER_FIXED.slice();
+    cls.sessions.forEach(function (j) {
+      var t = sessions[j];
+      head1.push(classNames[t.section.toLowerCase()] || t.section);
+      head2.push('S' + t.sessionNo);
+      var d = t.date.split('-');
+      head3.push(+d[2] + '-' + MONTHS[+d[1] - 1] + '-' + d[0]);
+    });
+    var values = [head1, head2, head3];
+    var hdrColor = function (row) { return row.map(function () { return '#f4f6f8'; }); };
+    var colors = [hdrColor(head1), hdrColor(head2), hdrColor(head3)];
+
+    cls.students.forEach(function (st) {
+      var counts = { Present: 0, Fined: 0, Late: 0, Absent: 0, early: 0 };
+      var cells = [], cellColors = [];
+      cls.sessions.forEach(function (j) {
+        var t = sessions[j];
+        var fix = corrMap[j + '|' + st.i];
+        if (fix) {                                          // set by hand in the Corrections tab
+          counts[fix.status]++;
+          cells.push(fix.status + ' · corrected');
+          cellColors.push(REGISTER_COLORS[fix.status]);
+          return;
+        }
+        var w = windowOf_(t);
+        var over = t.date < today || (t.date === today && nowMin > (w.end !== null ? w.end : w.start + CONFIG.DEFAULT_RULES[2]));
+        if (over && !status[j].any) { cells.push(NO_DATA); cellColors.push(REGISTER_COLORS.noData); return; }
+        var s = status[j][st.i];
+        var word = '', why = '', early = '';
+        if (s && s.signedIn) {
+          word = s.word;
+          why = s.why;
+          // Signed out for 10 minutes outside the area during class: they came, then left (or GPS
+          // drifted indoors). Counted as leaving early, never as absent.
+          if (s.autoAbsent && word !== 'Absent') early = 'Left early' + (s.outAt !== null && s.outAt !== undefined ? ' (out of area ' + hm_(s.outAt) + ')' : '');
+          else if (s.leftEarly && word !== 'Absent') early = 'Left early (' + s.leftEarly + ')';
+        } else if (over || (s && s.autoAbsent)) {
+          word = 'Absent'; why = 'no sign-in';              // never signed in to a session that is over
+        }
+        if (!word) { cells.push(''); cellColors.push(REGISTER_COLORS.none); return; }
+        counts[word]++;
+        if (early) counts.early++;
+        cells.push(word + (why ? ' · ' + why : '') + (early ? ' · ' + early : ''));
+        cellColors.push(REGISTER_COLORS[word]);
+      });
+      values.push([st.section, st.roll, st.name, counts.Present, counts.Fined, counts.Late, counts.Absent, counts.early].concat(cells));
+      colors.push(REGISTER_FIXED.map(function () { return '#ffffff'; }).concat(cellColors));
+    });
+
     var width = values[0].length;
     var pad = function (row) { while (row.length < width) row.push(''); return row; };
-    var grey = function () { var c = []; for (var x = 0; x < width; x++) c.push('#ffffff'); return c; };
-    values.push(pad([]));  colors.push(grey());
-    values.push(pad(['', '', 'Sign-ins not matched to a Roster student (' + unmatched.length + ')', 'Date']));
-    colors.push(grey().map(function (c, x) { return x < 4 ? '#f4f6f8' : c; }));
-    unmatched.sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0; })
-      .forEach(function (u) {
+    var white = function () { var c = []; for (var x = 0; x < width; x++) c.push('#ffffff'); return c; };
+    var title = function (row) { return white().map(function (c, x) { return x < 4 ? '#f4f6f8' : c; }); };
+
+    // Corrections that could not be applied, with the reason, so they can be put right.
+    // One that names no known class is listed on every class's tab.
+    var issues = corrIssues.filter(function (x) { return x[2] === cls.key || !classByKey[x[2]]; });
+    if (issues.length) {
+      values.push(pad([])); colors.push(white());
+      values.push(pad(['', '', 'Corrections not applied (' + issues.length + ')', 'Why'])); colors.push(title());
+      issues.forEach(function (x) { values.push(pad(['', '', x[0], x[1]])); colors.push(white()); });
+    }
+
+    // Sign-ins that could not be matched to a Roster student (name or roll no typed differently,
+    // or a student missing from the Roster), so they can be put right in the Roster
+    var mine = unmatched.filter(function (u) { return u[0].toLowerCase() === cls.key; })
+      .sort(function (a, b) { return a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0; });
+    if (mine.length) {
+      values.push(pad([])); colors.push(white());
+      values.push(pad(['', '', 'Sign-ins not matched to a Roster student (' + mine.length + ')', 'Date'])); colors.push(title());
+      mine.forEach(function (u) {
         var d = u[3].split('-');
         values.push(pad([u[0], u[1], u[2], +d[2] + '-' + MONTHS[+d[1] - 1] + '-' + d[0]]));
-        colors.push(grey());
+        colors.push(white());
       });
-  }
+    }
 
-  // ---- write it ----
-  var sheet = ss.getSheetByName(CONFIG.REGISTER_SHEET) || ss.insertSheet(CONFIG.REGISTER_SHEET, 0);
-  sheet.clear();
-  var nRows = values.length, nCols = values[0].length;
-  if (sheet.getMaxColumns() < nCols) sheet.insertColumnsAfter(sheet.getMaxColumns(), nCols - sheet.getMaxColumns());
-  if (sheet.getMaxRows() < nRows) sheet.insertRowsAfter(sheet.getMaxRows(), nRows - sheet.getMaxRows());
-  var range = sheet.getRange(1, 1, nRows, nCols);
-  range.setValues(values);
-  range.setBackgrounds(colors);
-  sheet.getRange(1, 1, 3, nCols).setFontWeight('bold');
-  sheet.setFrozenRows(3);
-  sheet.setFrozenColumns(3);
-  return 'Attendance register: ' + students.length + ' student(s) x ' + sessions.length + ' session(s), updated ' +
-         Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm') + '.';
+    // ---- write it ----
+    var name = registerSheetName_(cls.section);
+    var sheet = ss.getSheetByName(name) || ss.insertSheet(name, ci);
+    sheet.clear();
+    var nRows = values.length, nCols = values[0].length;
+    if (sheet.getMaxColumns() < nCols) sheet.insertColumnsAfter(sheet.getMaxColumns(), nCols - sheet.getMaxColumns());
+    if (sheet.getMaxRows() < nRows) sheet.insertRowsAfter(sheet.getMaxRows(), nRows - sheet.getMaxRows());
+    var range = sheet.getRange(1, 1, nRows, nCols);
+    range.setValues(values);
+    range.setBackgrounds(colors);
+    sheet.getRange(1, 1, 3, nCols).setFontWeight('bold');
+    sheet.setFrozenRows(3);
+    sheet.setFrozenColumns(3);
+    written.push(name + ': ' + cls.students.length + ' student(s) x ' + cls.sessions.length + ' session(s)');
+  });
+
+  // The old all-classes tab is no longer kept up to date, so it goes rather than show stale statuses
+  var old = ss.getSheetByName(CONFIG.REGISTER_SHEET);
+  if (old && ss.getSheets().length > 1) ss.deleteSheet(old);
+
+  return 'Attendance registers updated ' + Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm') + ': ' + written.join('; ') + '.';
+}
+
+/** "Register ECOM-SEP-26": the class's register tab (characters Sheets does not allow in a tab name are dropped). */
+function registerSheetName_(section) {
+  return (CONFIG.REGISTER_PREFIX + text_(section).replace(/[\[\]:*?\/\\]/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 99);
 }
 
 
@@ -1442,7 +1508,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Update early-leaver and shared-phone flags now', 'menuUpdateFlags')
     .addItem('Update flags automatically every 15 min', 'menuInstallFlagTrigger')
-    .addItem('Update the attendance register now', 'menuBuildRegister')
+    .addItem('Update the attendance registers now', 'menuBuildRegister')
     .addItem('Open the Corrections tab', 'menuCorrections')
     .addSeparator()
     .addItem('Send Roster changes to phones now', 'menuClearRosterCache')
