@@ -15,6 +15,9 @@ const DOCS = path.join(__dirname, '..', 'docs');
 const API = 'https://script.google.com/macros/s/TEST/exec';
 const LUMS = { latitude: 31.4708, longitude: 74.4097, accuracy: 15 };
 const FAST = { latitude: 31.48104614, longitude: 74.30328505, accuracy: 15 };
+// phones report from a few metres off the Roster point, as real ones do (exactly on it = fake GPS)
+const near = (p) => ({ latitude: p.latitude + 0.00006, longitude: p.longitude - 0.00004, accuracy: p.accuracy });
+const LUMS_AT = near(LUMS), FAST_AT = near(FAST);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A time zone where it is late morning now, so "start 100 minutes ago" never crosses midnight
@@ -95,7 +98,7 @@ async function waitFor(fn, ms, label) { const t = Date.now(); while (Date.now() 
   const browser = await chromium.launch();
   try {
     console.log('time zone', TZ, 'now', hm(NOW));
-    const a = await phone(browser, LUMS);
+    const a = await phone(browser, LUMS_AT);
 
     // the tiles count one class, never the whole roster (6 students across 4 classes here)
     assert.strictEqual(await a.p.textContent('#totalStudentsCount'), '–', 'no class chosen: no count');
@@ -125,15 +128,33 @@ async function waitFor(fn, ms, label) { const t = Date.now(); while (Date.now() 
     await a.p.waitForFunction(() => /Checked out at/.test(document.getElementById('status').textContent), null, { timeout: 30000 });
     await waitFor(() => logRows().some((r) => r[4] === 'CHECK_OUT' && r[7] === 'Asma Bashir'), 60000, 'check-out uploaded');
     const co = logRows().find((r) => r[4] === 'CHECK_OUT');
-    assert.strictEqual(co[10], 0, 'distance worked out on the server');
+    assert.strictEqual(co[10], 8, 'distance worked out on the server (8 m from the Roster point)');
     console.log('shared roll no, class name, check-out ok');
 
-    const b = await phone(browser, FAST);
+    const b = await phone(browser, FAST_AT);
     m = await trySignIn(b.p, '22L-5002', 'Ezzan Hussain', 'BSBA 7A');
     assert.ok(/^Signed in/.test(m), m);
     assert.ok(!(await b.p.isVisible('#checkoutBtn')), 'no check-out an hour before the end');
     assert.ok(/Check out opens at /.test(await b.p.textContent('#checkoutHint')));
     console.log('FAST class from FAST ok, check-out hidden until its window');
+
+    // fake GPS: the exact point a page once published, and a jump no journey can make
+    const f1 = await phone(browser, FAST);
+    m = await trySignIn(f1.p, '22L-5002', 'Ezzan Hussain', 'BSBA 7A');
+    assert.ok(/^Sign-in refused: your phone reported the exact classroom map point/.test(m), m);
+    const HOME = { latitude: 31.374077, longitude: 74.188266, accuracy: 35 };
+    const f2 = await phone(browser, HOME);
+    m = await trySignIn(f2.p, '22L-5002', 'Ezzan Hussain', 'BSBA 7A');
+    assert.ok(/You are 16\d{3} m from class/.test(m), 'from home: ' + m);
+    await f2.c.setGeolocation(FAST_AT);                      // the fake-location app is switched on
+    await sleep(1500);
+    m = await trySignIn(f2.p, '22L-5002', 'Ezzan Hussain', 'BSBA 7A');
+    assert.ok(/^Sign-in refused: your location jumped 16\.\d km in 1 min/.test(m), 'jump: ' + m + ' history ' + await f2.p.evaluate(() => localStorage.getItem('att_recent_fixes')));
+    assert.ok(!(await f2.p.isVisible('#signOutBtn')), 'not signed in');
+    await waitFor(() => logRows().filter((r) => r[4] === 'FAKE_GPS').length >= 2, 60000, 'both attempts reported');
+    const fk = logRows().filter((r) => r[4] === 'FAKE_GPS').map((r) => r[27]).sort();
+    assert.ok(/^location jumped 16\.\d km in 1 min$/.test(fk[0]) && fk[1] === 'phone reported the exact classroom map point', JSON.stringify(fk));
+    console.log('fake GPS refused and reported (exact published point, 16 km jump)');
 
     // offline: sign in with no signal, upload when it comes back
     await a.c.setOffline(true);
@@ -146,7 +167,7 @@ async function waitFor(fn, ms, label) { const t = Date.now(); while (Date.now() 
     await waitFor(() => logRows().some((r) => r[4] === 'SIGN_IN' && r[7] === 'Ali Hassan'), 90000, 'offline sign-in uploaded');
     console.log('offline sign-in ok');
 
-    const ios = await phone(browser, LUMS, { noGeo: true, ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1' });
+    const ios = await phone(browser, LUMS_AT, { noGeo: true, ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1' });
     m = await trySignIn(ios.p, 'E-03', 'Ali Hassan', 'ECOM-SEP-26');
     assert.ok(/On iPhone: Settings > Privacy & Security > Location Services/.test(m), m);
     console.log('iPhone location help ok');

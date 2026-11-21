@@ -16,8 +16,8 @@
  *
  * Columns A to R of the log are the original layout. Added after them:
  *   S Session No, T GPS Accuracy (m), U Upload Delay (mins), V Clock Check, W Event ID,
- *   X Checked Out, Y Last Seen In Class, Z Early Leaver, AA Shared Device
- * X to AA are filled in on sign-in rows by updateFlags() once a class has ended.
+ *   X Checked Out, Y Last Seen In Class, Z Early Leaver, AA Shared Device, AB GPS Check
+ * X to AB are filled in on sign-in rows by updateFlags() once a class has ended.
  */
 
 var CONFIG = {
@@ -46,6 +46,16 @@ var CONFIG = {
   CHECKOUT_GRACE_MIN: 30,       // check-out is still accepted this long after the end
   FLAG_DELAY_MIN: 15,           // flags are worked out this long after a class ends, so late uploads count
   HANDOVER_MIN: 5,              // a Sign out followed within this long by another student signing in on that phone is a handover
+  // Fake GPS (a mock-location app, switched on in Android's Developer options). A web page cannot
+  // see that setting, so the readings themselves are checked (see gpsCheck_):
+  FAKE_GPS_ABSENT: true,        // a sign-in found to use fake GPS counts as Absent in the register
+  GPS_JUMP_MIN_M: 2000,         // a jump this far ...
+  GPS_JUMP_KMH: 150,            // ... at this speed or more, between two readings, is not real travel
+  GPS_FROZEN_MIN: 30,           // same point and same accuracy in every reading for this long: "check GPS"
+  GPS_FROZEN_READINGS: 5,
+  // Classroom points that were published in a page's source; a phone reporting one of them
+  // exactly has had it typed into a fake-location app. (The Roster's own points are added.)
+  KNOWN_PINS: [[31.48104614, 74.30328505]],   // the FAST point hard-coded in the old attend02 page
   FLAG_DAYS_BACK: 2,            // updateFlags() revisits today and yesterday, for phones that upload late
   GPS_TOLERANCE_MAX: 30,        // metres of reported GPS error forgiven at the edge of the area
   ROSTER_CACHE_SECONDS: 300,    // roster edits reach phones within 5 min (instantly when edited by hand, see onEdit)
@@ -64,11 +74,12 @@ var HEADERS = [
   'Photo Drive Link', 'Device ID', 'Late vs Schedule (Mins)', 'On Time', 'Fined',
   'Late', 'Absent',
   'Session No', 'GPS Accuracy (m)', 'Upload Delay (mins)', 'Clock Check', 'Event ID',
-  'Checked Out', 'Last Seen In Class', 'Early Leaver', 'Shared Device'
+  'Checked Out', 'Last Seen In Class', 'Early Leaver', 'Shared Device', 'GPS Check'
 ];
 var FIRST_NEW_COL = 19;               // S
 var COL_EVENT_ID = 23;                // W
-var COL_FLAGS = 24;                   // X: first of the four flag columns
+var COL_FLAGS = 24;                   // X: first of the flag columns (X to AB)
+var N_FLAGS = 5;
 var ROSTER_CACHE_KEY = 'att_roster_v3';
 
 /**
@@ -573,6 +584,7 @@ function buildRow_(ev, id, timetable, tz) {
 
   var st = { diffText: '', onTime: '', fined: '', late: '', absent: '', sessionNo: '' };
   if (type === 'SIGN_IN') st = evaluateStatus_(pick, minutes_(Utilities.formatDate(when, tz, 'HH:mm')));
+  else if (type === 'FAKE_GPS' && pick && pick.inWindow) st.sessionNo = pick.s.sessionNo;   // the session it was trying to sign in to
 
   // The distance is worked out here from the session's classroom, not taken from the phone
   var dist = num_(ev.distanceMeters);
@@ -605,7 +617,8 @@ function buildRow_(ev, id, timetable, tz) {
     Math.max(0, Math.round((now - ts) / 60000)),     // U Upload Delay (mins)
     clockCheck_(ev, ts, now),                        // V Clock Check
     id,                                              // W Event ID
-    '', '', '', ''                                   // X-AA flags, filled in by updateFlags()
+    '', '', '', '',                                  // X-AA flags, filled in by updateFlags()
+    type === 'FAKE_GPS' ? cell_(ev.note, 200) : ''   // AB what the phone saw (sign-in rows: filled in by updateFlags())
   ];
 }
 
@@ -865,10 +878,29 @@ function collectSignIns_(vals, day, sec, byRoll) {
  *                         the page is open. "No" when seen inside in the last N minutes (Roster
  *                         column "Early Leaver if Not Seen") or checked out. Blank for absentees.
  *   AA Shared Device      "Yes: N students" when one phone signed in several students that day
+ *   AB GPS Check          "Fake GPS: ..." when the readings show a fake-location app (see gpsCheck_),
+ *                         "Check GPS: ..." when they only look suspicious; blank otherwise
  * Runs every 15 minutes once "Update flags automatically" is chosen in the Attendance menu,
  * and looks back FLAG_DAYS_BACK days, so records uploaded late still count. Safe to run any time.
  */
 function updateFlags() {
+  var tz = classTz_(SpreadsheetApp.getActiveSpreadsheet()), now = Date.now(), days = [];
+  for (var d = 0; d < CONFIG.FLAG_DAYS_BACK; d++) days.push(Utilities.formatDate(new Date(now - d * 86400000), tz, 'yyyy-MM-dd'));
+  return flagDays_(days);
+}
+
+/** Attendance menu: works the flags out again for every day that has a log tab (e.g. after a rule changed). */
+function updateFlagsAllDays() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet(), seen = {}, days = [];
+  var today = Utilities.formatDate(new Date(), classTz_(ss), 'yyyy-MM-dd');
+  ss.getSheets().forEach(function (sh) {
+    var m = /^(\d{4}-\d{2}-\d{2})/.exec(sh.getName());
+    if (m && m[1] <= today && !seen[m[1]]) { seen[m[1]] = true; days.push(m[1]); }
+  });
+  return flagDays_(days.sort());
+}
+
+function flagDays_(days) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var tz = classTz_(ss);
   var timetable = loadRoster_().timetable;
@@ -880,12 +912,15 @@ function updateFlags() {
   if (!lock.tryLock(CONFIG.LOCK_WAIT_MS)) return 'The sheet is busy with uploads. Nothing changed; try again in a minute.';
   var written = 0, tabsDone = 0;
   try {
-    for (var d = 0; d < CONFIG.FLAG_DAYS_BACK; d++) {
-      var day = Utilities.formatDate(new Date(now - d * 86400000), tz, 'yyyy-MM-dd');
+    days.forEach(function (day) {
       var tabs = logSheetsFor_(ss, day, '').map(function (sheet) {
         ensureHeaders_(sheet);
         var last = sheet.getLastRow();
-        return { sheet: sheet, vals: last < 2 ? [] : sheet.getRange(2, 1, last - 1, HEADERS.length).getDisplayValues() };
+        if (last < 2) return { sheet: sheet, vals: [] };
+        var vals = sheet.getRange(2, 1, last - 1, HEADERS.length).getDisplayValues();
+        // I and J as numbers: a number format on the sheet must not round the coordinates
+        sheet.getRange(2, 9, last - 1, 2).getValues().forEach(function (ll, i) { vals[i][8] = ll[0]; vals[i][9] = ll[1]; });
+        return { sheet: sheet, vals: vals };
       });
 
       // which students each phone signed in that day, across every class
@@ -902,10 +937,10 @@ function updateFlags() {
         if (!t.vals.length) return;
         var flags = flagsFor_(t.vals, timetable, day, day === today ? nowMin : 24 * 60 + CONFIG.FLAG_DELAY_MIN, byDevice);
         if (!flags.changed) return;
-        t.sheet.getRange(2, COL_FLAGS, flags.rows.length, 4).setValues(flags.rows);
+        t.sheet.getRange(2, COL_FLAGS, flags.rows.length, N_FLAGS).setValues(flags.rows);
         written += flags.changed; tabsDone++;
       });
-    }
+    });
   } finally {
     lock.releaseLock();
   }
@@ -917,15 +952,20 @@ function updateFlags() {
 
 /** Works out X to AA for one tab's rows (display values, columns A..AA). */
 function flagsFor_(vals, timetable, day, nowMin, byDevice) {
-  var events = {};   // student -> [{ t, type, dist, acc, dev }]
+  var events = {};   // student -> [{ t, sec, type, dist, acc, dev, lat, lng, note }]
   var phoneSignIns = {};   // phone -> [{ t, who }]: to spot a phone handed to the next student
   vals.forEach(function (r) {
     var t = timeMin_(r[3]);
     if (t === null) return;
     var who = studentKey_(r[5], r[7]), dev = text_(r[12]);
-    (events[who] = events[who] || []).push({ t: t, type: text_(r[4]), dist: Number(r[10]), acc: Number(r[19]) || 0, dev: dev });
+    (events[who] = events[who] || []).push({ t: t, sec: timeSec_(r[3]), type: text_(r[4]), dist: Number(r[10]), acc: Number(r[19]) || 0, dev: dev,
+      lat: text_(r[8]) === '' ? NaN : Number(r[8]), lng: text_(r[9]) === '' ? NaN : Number(r[9]), note: text_(r[27]) });
     if (dev && text_(r[4]) === 'SIGN_IN') (phoneSignIns[dev] = phoneSignIns[dev] || []).push({ t: t, who: who });
   });
+  // points published for this day's classes, plus ones known from old pages
+  var pins = (CONFIG.KNOWN_PINS || []).slice();
+  timetable.forEach(function (c) { if (c.date === day && c.lat !== null && c.lng !== null) pins.push([c.lat, c.lng]); });
+  var gpsOf = {};
   // signed out so someone else could sign in on the same phone (within HANDOVER_MIN), not to leave
   var handedOver = function (who, e) {
     return (phoneSignIns[e.dev] || []).some(function (x) { return x.who !== who && x.t >= e.t && x.t <= e.t + CONFIG.HANDOVER_MIN; });
@@ -933,7 +973,7 @@ function flagsFor_(vals, timetable, day, nowMin, byDevice) {
 
   var firstSignIn = {}, changed = 0;
   var rows = vals.map(function (r) {
-    var keep = [r[23], r[24], r[25], r[26]];
+    var keep = [r[23], r[24], r[25], r[26], r[27]];
     if (text_(r[4]) !== 'SIGN_IN') return keep;
     var who = studentKey_(r[5], r[7]);
     var sessionNo = text_(r[18]);
@@ -950,7 +990,8 @@ function flagsFor_(vals, timetable, day, nowMin, byDevice) {
       var c = timetable[i];
       if (c.date === day && c.sessionNo === sessionNo && c.section.toLowerCase() === text_(r[6]).toLowerCase()) { s = c; break; }
     }
-    var out = ['', '', '', shared];
+    if (!gpsOf.hasOwnProperty(who)) gpsOf[who] = gpsCheck_(events[who] || [], pins);
+    var out = ['', '', '', shared, gpsOf[who]];
     var w = s ? windowOf_(s) : null;
     if (w && w.end !== null && nowMin >= w.end + CONFIG.FLAG_DELAY_MIN) {
       var until = w.end + CONFIG.CHECKOUT_GRACE_MIN;
@@ -993,6 +1034,81 @@ function flagsFor_(vals, timetable, day, nowMin, byDevice) {
     return out;
   });
   return { rows: rows, changed: changed };
+}
+
+/**
+ * Fake GPS. Android lets an app feed the phone a made-up location (Developer options > Select mock
+ * location app). A web page cannot see that setting, but the readings give it away:
+ *   "Fake GPS: location jumped 16.1 km in 1 min"   the page caught it and refused (a FAKE_GPS row)
+ *   "Fake GPS: jumped 16.1 km in 2 min, 15:53 to 15:55"   two readings further apart than any
+ *        real journey (GPS_JUMP_MIN_M at GPS_JUMP_KMH or more, and far more than both readings' error):
+ *        the fake location slipped, or was switched on or off during class
+ *   "Check GPS: two phones 9.7 km apart signed in as this student"   readings from two different phones,
+ *        too far apart for one person: one of them is someone else's phone (only a prompt to look)
+ *   "Fake GPS: exactly the published classroom point"   a reading that is precisely a point from the
+ *        Roster or an old page (KNOWN_PINS), to the centimetre: typed in, never measured
+ *   "Check GPS: did not move for 76 min"   every reading for GPS_FROZEN_MIN or more is the same point
+ *        with the same accuracy; real GPS wanders a little, but a phone lying still can do this too,
+ *        so this is only a prompt to look
+ * Only fresh readings count (sign-in, location checks, check-out), not records that repeat the last one.
+ */
+var FRESH_TYPES = { SIGN_IN: 1, GPS_PING_2MIN: 1, CHECK_OUT: 1 };
+
+function gpsCheck_(evs, pins) {
+  var caught = evs.filter(function (e) { return e.type === 'FAKE_GPS'; })[0];
+  if (caught) return 'Fake GPS: ' + (caught.note || 'the phone reported a fake location');
+
+  var fixes = evs.filter(function (e) {
+    return FRESH_TYPES[e.type] && isFinite(e.lat) && isFinite(e.lng) && !(e.lat === 0 && e.lng === 0) && e.sec !== null;
+  }).sort(function (a, b) { return a.sec - b.sec; });
+
+  for (var i = 0; i < fixes.length; i++) {
+    for (var p = 0; p < pins.length; p++) {
+      if (Math.abs(fixes[i].lat - pins[p][0]) < 6e-7 && Math.abs(fixes[i].lng - pins[p][1]) < 6e-7) {   // the same to 6 decimals (about 10 cm)
+        return 'Fake GPS: exactly the published classroom point, ' + hm_(Math.floor(fixes[i].sec / 60));
+      }
+    }
+  }
+
+  // one phone, two readings further apart than any journey; two phones far apart is someone else's phone
+  var worst = null, twoPhones = null, lastOf = {};
+  for (var j = 0; j < fixes.length; j++) {
+    var b = fixes[j];
+    [lastOf[b.dev], j > 0 && fixes[j - 1].dev !== b.dev ? fixes[j - 1] : null].forEach(function (a, k) {
+      if (!a) return;
+      var d = distanceM_(a.lat, a.lng, b.lat, b.lng);
+      var secs = Math.max(b.sec - a.sec, 30);
+      var impossible = d >= CONFIG.GPS_JUMP_MIN_M && d / secs * 3.6 >= CONFIG.GPS_JUMP_KMH && d > 10 * ((a.acc || 0) + (b.acc || 0));
+      if (!impossible) return;
+      var hit = { d: d, secs: secs, from: a.sec, to: b.sec };
+      if (k === 0 && (!worst || d > worst.d)) worst = hit;
+      if (k === 1 && (!twoPhones || d > twoPhones.d)) twoPhones = hit;
+    });
+    lastOf[b.dev] = b;
+  }
+  if (worst) {
+    return 'Fake GPS: jumped ' + kmText_(worst.d) + ' in ' + Math.max(1, Math.round(worst.secs / 60)) + ' min, ' +
+           hm_(Math.floor(worst.from / 60)) + ' to ' + hm_(Math.floor(worst.to / 60));
+  }
+  if (twoPhones) {
+    return 'Check GPS: two phones ' + kmText_(twoPhones.d) + ' apart signed in as this student, ' +
+           hm_(Math.floor(twoPhones.from / 60)) + ' and ' + hm_(Math.floor(twoPhones.to / 60));
+  }
+
+  var times = {};
+  fixes.forEach(function (f) { times[f.sec] = f; });
+  var distinct = Object.keys(times).map(Number).sort(function (a, b) { return a - b; });
+  if (distinct.length >= CONFIG.GPS_FROZEN_READINGS) {
+    var f0 = fixes[0];
+    var still = fixes.every(function (f) { return f.lat === f0.lat && f.lng === f0.lng && f.acc === f0.acc; });
+    var span = Math.round((distinct[distinct.length - 1] - distinct[0]) / 60);
+    if (still && span >= CONFIG.GPS_FROZEN_MIN) return 'Check GPS: did not move for ' + span + ' min';
+  }
+  return '';
+}
+
+function kmText_(m) {
+  return m >= 100000 ? Math.round(m / 1000) + ' km' : (Math.round(m / 100) / 10) + ' km';
 }
 
 /** Attendance menu: turns on updateFlags() every 15 minutes (once is enough; running it again does no harm). */
@@ -1144,8 +1260,8 @@ function buildRegister() {
     var mine = function (r) { return text_(r[18]) === t.sessionNo || (!text_(r[18]) && only); };
     rows.forEach(function (r) {
       var type = text_(r[4]);
-      if (type !== 'SIGN_IN' && type !== 'AUTO_LOGOUT_ABSENT') return;
-      if (type === 'SIGN_IN' && !mine(r)) return;
+      if (type !== 'SIGN_IN' && type !== 'AUTO_LOGOUT_ABSENT' && type !== 'FAKE_GPS') return;
+      if ((type === 'SIGN_IN' || type === 'FAKE_GPS') && !mine(r)) return;
       if (type === 'AUTO_LOGOUT_ABSENT') {
         if (!only) return;                                  // cannot tell which of the day's sessions it ended
         // Walking out after the class has ended is not an absence (the old page did this to
@@ -1171,6 +1287,10 @@ function buildRegister() {
         if (!cur.autoAbsent || (at !== null && at < cur.outAt)) cur.outAt = at;   // the first time they were signed out
         cur.autoAbsent = true; out[st.i] = cur; return;
       }
+      if (type === 'FAKE_GPS') {                            // the phone refused a sign-in or check-out: fake location
+        if (!cur.fakeTry) cur.fakeTry = text_(r[27]) || 'the phone reported a fake location';
+        out[st.i] = cur; return;
+      }
       if (cur.signedIn) return;                             // the first sign-in of the session counts
       cur.signedIn = true;
       out.any = true;
@@ -1180,6 +1300,7 @@ function buildRegister() {
       // Z "Yes: signed out 19:40" / "Yes: out of area 19:40"; "Not seen at end" is not leaving early
       var left = /^Yes:\s*(.+)$/.exec(text_(r[25]));
       cur.leftEarly = left ? left[1] : '';
+      cur.gps = text_(r[27]);                               // AB "Fake GPS: ..." / "Check GPS: ..."
       out[st.i] = cur;
     });
     return out;
@@ -1240,12 +1361,19 @@ function buildRegister() {
     var hdrColor = function (row) { return row.map(function () { return '#f4f6f8'; }); };
     var colors = [hdrColor(head1), hdrColor(head2), hdrColor(head3)];
 
+    var fakes = [];   // [date, student, what the phone did] for the list under the register
     cls.students.forEach(function (st) {
       var counts = { Present: 0, Fined: 0, Late: 0, Absent: 0, early: 0 };
       var cells = [], cellColors = [];
       cls.sessions.forEach(function (j) {
         var t = sessions[j];
         var fix = corrMap[j + '|' + st.i];
+        var s = status[j][st.i];
+        // Fake GPS: found in the readings (AB on the sign-in) or caught by the phone (a FAKE_GPS record)
+        var fakeM = s ? /^Fake GPS:\s*(.+)$/.exec(text_(s.gps)) : null;
+        var fakeWhy = fakeM ? fakeM[1] : (s && s.fakeTry) || '';
+        var checkM = s && !fakeWhy ? /^Check GPS:\s*(.+)$/.exec(text_(s.gps)) : null;
+        if (fakeWhy) fakes.push([st, t.date, fakeWhy + (fix ? ' (corrected to ' + fix.status + ')' : '')]);
         if (fix) {                                          // set by hand in the Corrections tab
           counts[fix.status]++;
           cells.push(fix.status + ' · corrected');
@@ -1254,9 +1382,8 @@ function buildRegister() {
         }
         var w = windowOf_(t);
         var over = t.date < today || (t.date === today && nowMin > (w.end !== null ? w.end : w.start + CONFIG.DEFAULT_RULES[2]));
-        if (over && !status[j].any) { cells.push(NO_DATA); cellColors.push(REGISTER_COLORS.noData); return; }
-        var s = status[j][st.i];
-        var word = '', why = '', early = '';
+        if (over && !status[j].any && !fakeWhy) { cells.push(NO_DATA); cellColors.push(REGISTER_COLORS.noData); return; }
+        var word = '', why = '', early = '', gpsNote = '';
         if (s && s.signedIn) {
           word = s.word;
           why = s.why;
@@ -1264,13 +1391,17 @@ function buildRegister() {
           // drifted indoors). Counted as leaving early, never as absent.
           if (s.autoAbsent && word !== 'Absent') early = 'Left early' + (s.outAt !== null && s.outAt !== undefined ? ' (out of area ' + hm_(s.outAt) + ')' : '');
           else if (s.leftEarly && word !== 'Absent') early = 'Left early (' + s.leftEarly + ')';
+          if (fakeWhy && CONFIG.FAKE_GPS_ABSENT) { word = 'Absent'; why = 'fake GPS (' + fakeWhy + ')'; early = ''; }
+          else if (fakeWhy) gpsNote = 'fake GPS (' + fakeWhy + ')';
+          else if (checkM) gpsNote = 'check GPS (' + checkM[1] + ')';
         } else if (over || (s && s.autoAbsent)) {
-          word = 'Absent'; why = 'no sign-in';              // never signed in to a session that is over
+          word = 'Absent';                                  // never signed in to a session that is over
+          why = fakeWhy ? 'fake GPS (' + fakeWhy + ')' : 'no sign-in';
         }
         if (!word) { cells.push(''); cellColors.push(REGISTER_COLORS.none); return; }
         counts[word]++;
         if (early) counts.early++;
-        cells.push(word + (why ? ' · ' + why : '') + (early ? ' · ' + early : ''));
+        cells.push(word + (why ? ' · ' + why : '') + (early ? ' · ' + early : '') + (gpsNote ? ' · ' + gpsNote : ''));
         cellColors.push(REGISTER_COLORS[word]);
       });
       values.push([st.section, st.roll, st.name, counts.Present, counts.Fined, counts.Late, counts.Absent, counts.early].concat(cells));
@@ -1281,6 +1412,17 @@ function buildRegister() {
     var pad = function (row) { while (row.length < width) row.push(''); return row; };
     var white = function () { var c = []; for (var x = 0; x < width; x++) c.push('#ffffff'); return c; };
     var title = function (row) { return white().map(function (c, x) { return x < 4 ? '#f4f6f8' : c; }); };
+
+    // Fake GPS found, newest first, so the teacher can talk to the student (a correction still wins)
+    if (fakes.length) {
+      values.push(pad([])); colors.push(white());
+      values.push(pad(['', '', 'Fake GPS found (' + fakes.length + ')', 'Date', 'What the phone did'])); colors.push(title());
+      fakes.sort(function (a, b) { return a[1] > b[1] ? -1 : a[1] < b[1] ? 1 : 0; }).forEach(function (f) {
+        var d = f[1].split('-');
+        values.push(pad([f[0].section, f[0].roll, f[0].name, +d[2] + '-' + MONTHS[+d[1] - 1] + '-' + d[0], f[2]]));
+        colors.push(white().map(function (c, x) { return x === 4 ? REGISTER_COLORS.Absent : c; }));
+      });
+    }
 
     // Corrections that could not be applied, with the reason, so they can be put right.
     // One that names no known class is listed on every class's tab.
@@ -1506,8 +1648,9 @@ function onOpen() {
     .addItem('Check the Roster', 'menuCheckRoster')
     .addItem('Add the new Roster columns', 'menuSetupRoster')
     .addSeparator()
-    .addItem('Update early-leaver and shared-phone flags now', 'menuUpdateFlags')
+    .addItem('Update early-leaver, shared-phone and fake-GPS flags now', 'menuUpdateFlags')
     .addItem('Update flags automatically every 15 min', 'menuInstallFlagTrigger')
+    .addItem('Re-check every past class (finds fake GPS in old sign-ins)', 'menuUpdateFlagsAllDays')
     .addItem('Update the attendance registers now', 'menuBuildRegister')
     .addItem('Open the Corrections tab', 'menuCorrections')
     .addSeparator()
@@ -1524,6 +1667,7 @@ function menuCheckRoster() {
 }
 function menuSetupRoster() { SpreadsheetApp.getUi().alert(setupRosterColumns()); }
 function menuUpdateFlags() { SpreadsheetApp.getUi().alert(updateFlags()); }
+function menuUpdateFlagsAllDays() { SpreadsheetApp.getUi().alert(updateFlagsAllDays()); }
 function menuBuildRegister() { SpreadsheetApp.getUi().alert(buildRegister()); }
 function menuInstallFlagTrigger() { SpreadsheetApp.getUi().alert(installFlagTrigger()); }
 function menuClearRosterCache() { clearRosterCache(); SpreadsheetApp.getUi().alert('Phones will get the Roster the next time they open the page with signal.'); }
@@ -1585,7 +1729,7 @@ function logSheetsFor_(ss, date, section) {
   return out;
 }
 
-var HEADER_CACHE_PREFIX = 'att_hdr3_';   // new prefix: tabs made by the previous version still need X to AA
+var HEADER_CACHE_PREFIX = 'att_hdr4_';   // new prefix: tabs made by earlier versions still need X to AB
 
 function ensureHeaders_(sheet, name) {
   var cache = CacheService.getScriptCache();
@@ -1748,6 +1892,14 @@ function dayText_(v, tz) {
 /** "18:45:03", "6:45:03 PM" -> minutes of the day, or null */
 function timeMin_(v) {
   return minutes_(clock_(text_(v)));
+}
+
+/** "18:45:03", "6:45:03 PM" -> seconds of the day, or null */
+function timeSec_(v) {
+  var min = timeMin_(v);
+  if (min === null) return null;
+  var m = /^\d{1,2}[:.]\d{2}:(\d{2})/.exec(text_(v));
+  return min * 60 + (m ? parseInt(m[1], 10) : 0);
 }
 
 function hm_(mins) {

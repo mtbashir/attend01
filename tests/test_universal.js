@@ -13,6 +13,10 @@ const dayOf = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'nu
 const DAY = dayOf(Date.now() - 86400000);              // yesterday: its classes are over, so flags are due
 const at = (hhmm, day) => new Date((day || DAY) + 'T' + hhmm + ':00+05:00').getTime();
 const LUMS = [31.4708, 74.4097], FAST = [31.48104614, 74.30328505];
+// where test phones report from: a few metres from the Roster point, as a real phone would
+// (a phone exactly on a published point is caught as fake GPS)
+const NEAR = (p) => [p[0] + 0.00006, p[1] - 0.00004];
+const LUMS_AT = NEAR(LUMS), FAST_AT = NEAR(FAST);
 
 const HDR = ['Section', 'Student Roll No', 'Student Name', 'Class Name', 'Session No.', 'Day', 'Session Dates', 'Section',
   'Session Start Time', 'Session End Time', 'Fine if Delay by Min', 'Late if Delay by Min', 'Absent if Delay by Min',
@@ -52,13 +56,13 @@ console.log('roster: per-class location, radius and windows ok');
 
 // ---------------------------------------------------------------- 2. sign-in window and server distance
 const ev = (id, type, roll, name, t, extra) => Object.assign({ eventId: id, eventType: type, section: 'ECOM-SEP-26', rollNo: roll, name: name,
-  lat: LUMS[0], lng: LUMS[1], distanceMeters: 999, accuracy: 10, deviceId: 'DEV-' + name, deviceTs: t, skewMs: 0 }, extra || {});
+  lat: LUMS_AT[0], lng: LUMS_AT[1], distanceMeters: 999, accuracy: 10, deviceId: 'DEV-' + name, deviceTs: t, skewMs: 0 }, extra || {});
 ctx.__b = [
   ev('w1', 'SIGN_IN', 'E-03', 'Ali Hassan', at('17:55')),                       // 35 min early: before sign-in opens
   ev('w2', 'SIGN_IN', 'E-04', 'Ayaan Faisal', at('18:05')),                     // inside the window
   ev('w3', 'SIGN_IN', 'E-05', 'Faryal Tariq', at('18:40')),                     // fined (5 < 10 <= 10)
   ev('w4', 'SIGN_IN', 'E-06', 'Fatima Khan', at('09:10')),                      // morning session 2
-  ev('w5', 'SIGN_IN', 'E-07', 'Hammad Afzal', at('18:31'), { lat: FAST[0], lng: FAST[1], distanceMeters: 5 }),   // phone claims 5 m from FAST
+  ev('w5', 'SIGN_IN', 'E-07', 'Hammad Afzal', at('18:31'), { lat: FAST_AT[0], lng: FAST_AT[1], distanceMeters: 5 }),   // phone claims 5 m from FAST
   ev('w6', 'SIGN_IN', 'E-07', 'Hammad Afzal', at('12:00', DAY), { section: 'NO-SUCH-CLASS' }),
 ];
 let res = run('recordAttendanceBatch(__b)');
@@ -71,7 +75,7 @@ assert.strictEqual(b.w3[13] + '|' + b.w3[15], '+10 mins|Fined');
 assert.strictEqual(b.w4[18], '2', 'a sign-in picks the session whose window it falls in');
 assert.ok(b.w5[10] > 10000, 'distance worked out on the server from the session classroom, not the phone\'s 5 m: ' + b.w5[10]);
 assert.strictEqual(b.w6[13], 'No session found');
-assert.strictEqual(b.w2[10], 0, 'phone at the classroom -> 0 m');
+assert.strictEqual(b.w2[10], 8, 'phone 8 m from the classroom point -> 8 m, worked out on the server');
 console.log('sign-in window, session choice, server distance, no-session ok');
 
 // ---------------------------------------------------------------- 3. after class: check-out, early leaver, shared phone
@@ -250,8 +254,8 @@ ctx.__r = [
   R('r1', '1', 'Amna', D2, '18:31'), R('r2', '3', 'Chand', D2, '18:40'),                                   // Present, Fined; Dua never came
   R('r3', '1', 'Amna', D1, '18:45'), R('r4', '2', 'Bilal', D1, '19:00'), R('r5', '3', 'Chand', D1, '18:30'), // Late, Absent, Present (leaves early)
   R('r6', '4', 'Dua', D1, '18:29'), ev('r7', 'AUTO_LOGOUT_ABSENT', '4', 'Dua', at('19:10', D1)),            // on time, then out of the area 10 min
-  R('r8', '22L-1', 'Ezzan', D1, '15:59', { section: 'BSBA 7A', lat: FAST[0], lng: FAST[1] }),
-  ev('r10', 'GPS_PING_2MIN', '22L-1', 'Ezzan', at('17:05', D1), { section: 'BSBA 7A', lat: FAST[0], lng: FAST[1] }),
+  R('r8', '22L-1', 'Ezzan', D1, '15:59', { section: 'BSBA 7A', lat: FAST_AT[0], lng: FAST_AT[1] }),
+  ev('r10', 'GPS_PING_2MIN', '22L-1', 'Ezzan', at('17:05', D1), { section: 'BSBA 7A', lat: FAST_AT[0], lng: FAST_AT[1] }),
   ev('r9', 'GPS_PING_2MIN', '1', 'Amna', at('20:10', D1)),                                                 // Amna stays to the end
   ev('r11', 'MANUAL_LOGOUT', '3', 'Chand', at('19:30', D1)),                                               // Chand signs out an hour early
 ];
@@ -373,7 +377,10 @@ legacy('l1', 'Abdullah Umar', '1', '6:47:00', 'SIGN_IN'); legacy('l2', 'Abdullah
 legacy('l3', 'Ali Dhillon', '2', '8:45:00', 'AUTO_LOGOUT_ABSENT');
 run('buildRegister()');
 const PR2 = regTab('ECOM-SEP-26').raw;
-assert.strictEqual(PR2.find((r) => r[2] === 'Abdullah Umar')[8], 'Late · Left early (out of area 19:14)', 'old Pacific-time sign-out shown in Pakistan time');
+// 07:14 Pacific is 19:14 in Pakistan in summer (PDT) and 20:14 in winter (PST): both during the 18:30-20:30 class
+const pk714 = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+  .format(new Date(pacificMidnight(DAY).getTime() + (7 * 60 + 14) * 60000));
+assert.strictEqual(PR2.find((r) => r[2] === 'Abdullah Umar')[8], 'Late · Left early (out of area ' + pk714 + ')', 'old Pacific-time sign-out shown in Pakistan time');
 assert.strictEqual(PR2.find((r) => r[2] === 'Ali Dhillon')[8], 'Present', 'old sign-out after the class ended is ignored');
 // An old sign-out stamped 07:14 on the class day (Pakistan time), long before sign-in opened, is ignored
 const amAt = new Date(DAY + 'T07:14:00+05:00');
@@ -383,5 +390,102 @@ run('buildRegister()');
 assert.strictEqual(regTab('ECOM-SEP-26').raw.find((r) => r[2] === 'Ali Dhillon')[8], 'Present', 'a sign-out stamped before the class window does not count');
 ctx.__gas.ssTz = null;
 console.log('time zone ok (sheet on Pacific time, classes in Pakistan time; walking out after class is not absent)');
+
+// ---------------------------------------------------------------- 8. fake GPS (mock-location apps)
+// Modelled on real readings: one phone reported the old page's FAST point to the 6th decimal, slipped
+// to its real place 16 km away for 4 minutes, then reported Shanghai.
+freshSheets();
+const B7 = (roll, name) => ['BSBA 7A', roll, name, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+setRoster(HDR, [
+  ['BSBA 7A', 'H-1', 'Haris', '', '24', 'x', DAY, 'BSBA 7A', '16:00', '17:20', 0, 7, 15, FAST[0], FAST[1], 100, 30, 10, 30],
+  B7('P-1', 'Pin'), B7('F-1', 'Frozen'), B7('D-1', 'Driver'), B7('C-1', 'Coarse'), B7('Q-1', 'Caught'), B7('S-1', 'Shanghai'), B7('N-1', 'Normal'), B7('T-1', 'Twophones'),
+]);
+const OLD_PIN = { lat: 31.481046, lng: 74.303285 };          // the old attend02 point, as a phone rounds it
+const home = { lat: 31.374077, lng: 74.188266, accuracy: 35 };
+const atS = (hms) => new Date(DAY + 'T' + (hms.length === 5 ? hms + ':00' : hms) + '+05:00').getTime();
+const g = (id, type, roll, name, hm, extra) => ev(id, type, roll, name, atS(hm), Object.assign({ section: 'BSBA 7A', lat: FAST_AT[0], lng: FAST_AT[1], accuracy: 15 }, extra || {}));
+const frozenAt = { lat: FAST_AT[0] + 0.00002, lng: FAST_AT[1], accuracy: 15 };
+ctx.__f = [
+  // jumps 16 km and back within minutes
+  g('h1', 'SIGN_IN', 'H-1', 'Haris', '15:53:03'), g('h2', 'GPS_PING_2MIN', 'H-1', 'Haris', '15:55:03', home),
+  g('h3', 'GPS_PING_2MIN', 'H-1', 'Haris', '15:57:03', home), g('h4', 'MANUAL_LOGOUT', 'H-1', 'Haris', '15:58:15'),
+  g('h5', 'SIGN_IN', 'H-1', 'Haris', '15:58:21'), g('h6', 'CHECK_OUT', 'H-1', 'Haris', '17:12:00'),
+  // exactly the published point
+  g('p1', 'SIGN_IN', 'P-1', 'Pin', '15:59:10', OLD_PIN), g('p2', 'CHECK_OUT', 'P-1', 'Pin', '17:12:00', OLD_PIN),
+  // the same point and accuracy for an hour: only a prompt to check
+  g('f1', 'SIGN_IN', 'F-1', 'Frozen', '15:55:00', frozenAt), g('f2', 'GPS_PING_2MIN', 'F-1', 'Frozen', '16:10:00', frozenAt),
+  g('f3', 'GPS_PING_2MIN', 'F-1', 'Frozen', '16:25:00', frozenAt), g('f4', 'GPS_PING_2MIN', 'F-1', 'Frozen', '16:40:00', frozenAt),
+  g('f5', 'GPS_PING_2MIN', 'F-1', 'Frozen', '16:55:00', frozenAt), g('f6', 'CHECK_OUT', 'F-1', 'Frozen', '17:12:00', frozenAt),
+  // drives 8 km in 15 minutes: real travel, not fake (but out of the area: left early)
+  g('d1', 'SIGN_IN', 'D-1', 'Driver', '15:55:00'), g('d2', 'GPS_PING_2MIN', 'D-1', 'Driver', '16:10:00', { lat: FAST[0] + 0.07, lng: FAST[1], accuracy: 12 }),
+  // a coarse cell-tower reading 5 km off (±1500 m), then back: GPS error, not fake
+  g('c1', 'SIGN_IN', 'C-1', 'Coarse', '15:55:00'), g('c2', 'GPS_PING_2MIN', 'C-1', 'Coarse', '16:05:00', { lat: FAST[0] + 0.045, lng: FAST[1], accuracy: 1500 }),
+  g('c3', 'GPS_PING_2MIN', 'C-1', 'Coarse', '16:07:00'), g('c4', 'CHECK_OUT', 'C-1', 'Coarse', '17:12:00'),
+  // the phone itself caught the jump and refused the sign-in
+  g('q1', 'FAKE_GPS', 'Q-1', 'Caught', '15:58:00', { note: 'location jumped 16.1 km in 1 min' }),
+  // Shanghai
+  g('s1', 'SIGN_IN', 'S-1', 'Shanghai', '16:00:00'), g('s2', 'GPS_PING_2MIN', 'S-1', 'Shanghai', '16:05:50', { lat: 31.230416, lng: 121.473701, accuracy: 150 }),
+  g('s3', 'GPS_PING_2MIN', 'S-1', 'Shanghai', '17:10:00'),
+  // signed in as by two phones 9.7 km apart, 20 seconds apart: someone else's phone, not a GPS jump
+  g('t1', 'SIGN_IN', 'T-1', 'Twophones', '15:51:50', { deviceId: 'DEV-friend', lat: 31.47133, lng: 74.188471, accuracy: 8 }),
+  g('t2', 'SIGN_IN', 'T-1', 'Twophones', '15:52:10', { deviceId: 'DEV-own', lat: 31.449917, lng: 74.287943, accuracy: 35 }),
+  // an ordinary student: readings wander a little
+  g('n1', 'SIGN_IN', 'N-1', 'Normal', '15:56:00'), g('n2', 'GPS_PING_2MIN', 'N-1', 'Normal', '16:30:00', { lat: FAST_AT[0] + 0.00003, lng: FAST_AT[1] + 0.00001, accuracy: 18 }),
+  g('n3', 'CHECK_OUT', 'N-1', 'Normal', '17:12:00', { lat: FAST_AT[0] - 0.00002, lng: FAST_AT[1], accuracy: 11 }),
+];
+res = run('recordAttendanceBatch(__f)');
+assert.ok(Object.values(res.results).every((v) => v === 'ok'), JSON.stringify(res.results));
+run('updateFlags()');
+b = byId();
+const gps = (id) => b[id][27];
+assert.strictEqual(gps('h1'), 'Fake GPS: jumped 16.1 km in 2 min, 15:53 to 15:55', 'a jump no journey can make');
+assert.strictEqual(gps('h5'), '', 'only the first sign-in of the session carries the flags');
+assert.strictEqual(gps('p1'), 'Fake GPS: exactly the published classroom point, 15:59', 'a typed-in point');
+assert.strictEqual(gps('f1'), 'Check GPS: did not move for 77 min', 'a frozen fix is only a prompt to check');
+assert.strictEqual(gps('d1'), '', 'driving 8 km in 15 min is real travel');
+assert.strictEqual(gps('c1'), '', 'a coarse cell-tower reading is GPS error, not fake');
+assert.strictEqual(gps('q1'), 'location jumped 16.1 km in 1 min', 'what the phone saw is kept on its record');
+assert.strictEqual(gps('s1'), 'Fake GPS: jumped 4443 km in 6 min, 16:00 to 16:05', 'Shanghai');
+assert.strictEqual(gps('n1'), '', 'an ordinary student is not flagged');
+assert.strictEqual(gps('t1'), 'Check GPS: two phones 9.7 km apart signed in as this student, 15:51 and 15:52', 'two phones, not a jump');
+assert.strictEqual(b.q1[18], '24', 'the phone\'s refusal is tied to the session it tried');
+const FR = regTab('BSBA 7A').raw;
+const cell = (n) => FR.find((r) => r[2] === n)[8];
+assert.strictEqual(cell('Haris'), 'Absent · fake GPS (jumped 16.1 km in 2 min, 15:53 to 15:55)');
+assert.strictEqual(cell('Pin'), 'Absent · fake GPS (exactly the published classroom point, 15:59)');
+assert.strictEqual(cell('Frozen'), 'Present · check GPS (did not move for 77 min)', 'still counted, with a prompt');
+assert.strictEqual(cell('Caught'), 'Absent · fake GPS (location jumped 16.1 km in 1 min)', 'no sign-in, but the reason is shown');
+assert.strictEqual(cell('Shanghai'), 'Absent · fake GPS (jumped 4443 km in 6 min, 16:00 to 16:05)');
+assert.strictEqual(cell('Normal'), 'Present');
+assert.strictEqual(FR.find((r) => r[2] === 'Haris')[6], 1, 'counted as an absence');
+const fl8 = FR.findIndex((r) => /^Fake GPS found \(4\)$/.test(r[2]));
+assert.ok(fl8 > 0, 'listed under the register: ' + FR.map((r) => r[2]).join(','));
+eq(FR[fl8 + 1].slice(1, 3), ['H-1', 'Haris']);
+// counted as present instead, when the school prefers to decide by hand
+run('CONFIG.FAKE_GPS_ABSENT = false'); run('buildRegister()');
+assert.strictEqual(regTab('BSBA 7A').raw.find((r) => r[2] === 'Haris')[8], 'Present · fake GPS (jumped 16.1 km in 2 min, 15:53 to 15:55)');
+run('CONFIG.FAKE_GPS_ABSENT = true');
+// a correction still wins, and the list says so
+const CT8 = ctx.__gas.sheets.Corrections, c8 = [fmtD(DAY), 'BSBA 7A', 'H-1', '', '', 'Present', 'phone fault, checked'];
+CT8.raw.push(c8); CT8.shown.push(c8.map(String));
+run('buildRegister()');
+const FR2 = regTab('BSBA 7A').raw;
+assert.strictEqual(FR2.find((r) => r[2] === 'Haris')[8], 'Present · corrected');
+assert.ok(FR2.some((r) => r[1] === 'H-1' && /\(corrected to Present\)$/.test(r[4])), 'the list notes the correction');
+console.log('fake GPS ok (jump, published point, frozen fix, phone-caught, Shanghai; driving and coarse fixes not flagged; register + list + correction)');
+
+// Past days: the timer only revisits 2 days, "Re-check every past class" does them all
+const OLD = dayOf(Date.now() - 10 * 86400000);
+const r8 = ctx.__gas.sheets.Roster;
+r8.raw.push(['', '', ''].concat(['', '25', 'x', OLD, 'BSBA 7A', '16:00', '17:20', 0, 7, 15, FAST[0], FAST[1], 100, 30, 10, 30]));
+r8.shown.push(r8.raw[r8.raw.length - 1].map(String));
+run('clearRosterCache()');
+ctx.__o = [ev('o1', 'SIGN_IN', 'P-1', 'Pin', at('15:59', OLD), { section: 'BSBA 7A', lat: OLD_PIN.lat, lng: OLD_PIN.lng, accuracy: 15 })];
+run('recordAttendanceBatch(__o)');
+run('updateFlags()');
+assert.strictEqual(byId().o1[27], '', 'the 15-minute timer does not reach back 10 days');
+const all = run('updateFlagsAllDays()');
+assert.strictEqual(byId().o1[27], 'Fake GPS: exactly the published classroom point, 15:59', 'the re-check does: ' + all);
+console.log('re-check of past classes ok');
 
 console.log('\nALL UNIVERSAL TESTS PASSED');
