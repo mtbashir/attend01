@@ -15,7 +15,7 @@ While the session is open, the phone checks the student's location every 2 minut
 
 **Check-out.** A *Check out* button appears in the last 10 minutes of class (Roster: *Check-out Opens*) and stays until 30 minutes after the end. It needs a location inside the classroom area, like sign-in. Until then the page says when check-out opens.
 
-**Early leavers and shared phones.** Once a class has ended (plus 15 minutes for late uploads), the server fills four columns on each sign-in row: *Checked Out*, *Last Seen In Class*, *Early Leaver* (see below) and *Shared Device* (one phone signed in several students that day; flagged, never blocked). A check-out counts as being seen.
+**Early leavers, shared phones and fake GPS.** Once a class has ended (plus 15 minutes for late uploads), the server fills five columns on each sign-in row: *Checked Out*, *Last Seen In Class*, *Early Leaver* (see below), *Shared Device* (one phone signed in several students that day; flagged, never blocked) and *GPS Check* (see **Fake GPS** below). A check-out counts as being seen.
 
 *Early Leaver* is only set on evidence, because phones report their location only while the page is open and the screen is on:
 
@@ -29,6 +29,19 @@ While the session is open, the phone checks the student's location every 2 minut
 A Sign out does not count as leaving when it happens during the sign-in rush (before the Absent limit, e.g. 20 minutes after the start) or when another student signs in on the same phone within 5 minutes (the phone was handed on). A Sign out inside the area counts as being seen; the page takes a fresh location when Sign out is pressed.
 
 A web page cannot read the location while it is closed or the screen is off. So a student who keeps the page closed and does not check out is flagged as an early leaver even if they stayed. Tell students to check out: it is what keeps them off the list.
+
+**Fake GPS.** On Android a student can switch on a fake-location app (*Settings → Developer options → Select mock location app*) and "be" in class from home. A web page cannot see Developer options or which app supplies the location; only an installed app can. But a made-up location gives itself away in the readings, so both the phone and the server check them:
+
+| What the readings show | Phone | GPS Check (column AB) | Register |
+|---|---|---|---|
+| The phone "travelled" further than any journey in a few minutes (at least 2 km at 150 km/h or more): the fake slipped, or was switched on just before signing in | refuses the sign-in or check-out and reports it | *Fake GPS: jumped 16.1 km in 2 min, 15:53 to 15:55* | *Absent · fake GPS (…)* |
+| A classroom point to the centimetre (the Roster's, or one an old page published): typed into the app, never measured | refuses and reports it | *Fake GPS: exactly the published classroom point, 16:05* | *Absent · fake GPS (…)* |
+| Two phones far apart signed in as the same student within minutes: one is someone else's phone | — | *Check GPS: two phones 9.7 km apart signed in as this student, …* | the status, plus *· check GPS (…)* |
+| The same point and accuracy in every reading for 30 minutes or more: real GPS wanders a little, but a phone lying still can do this too | — | *Check GPS: did not move for 76 min* | the status, plus *· check GPS (…)* |
+
+A refused attempt is recorded as a *FAKE_GPS* row (what the phone saw is in column AB), and the student is told the attempt was reported. Each class's register tab lists every fake-GPS sign-in under the students (**Fake GPS found**). A correction in the Corrections tab still wins, and the list notes it. To keep such sign-ins as recorded and decide by hand, set `FAKE_GPS_ABSENT` to `false`.
+
+A careful cheat who picks a point in the room and never lets the real location show cannot be caught from GPS alone. The photo taken at sign-in, or a code shown in class, are the defences for that.
 
 The queue uploads whenever there is signal. Text records go first, in batches of up to 40 per call, and photos follow one per call. Each record carries a unique event ID, so if a reply is lost and the phone sends again, the server skips anything it already wrote. A record is only removed from the phone once the server confirms it.
 
@@ -120,8 +133,9 @@ Give every student their own roll number. Two students sharing one are kept apar
 |---|---|
 | Check the Roster | Lists shared roll numbers, dates and times that cannot be read, sessions with no location, classes with sessions but no students |
 | Add the new Roster columns | Adds the columns above and fills the defaults. Running it again adds nothing |
-| Update early-leaver and shared-phone flags now | Fills the four flag columns for classes that have ended |
+| Update early-leaver, shared-phone and fake-GPS flags now | Fills the five flag columns for classes that have ended (today and yesterday) |
 | Update flags automatically every 15 min | Turns on a timer that does the above. Do this once |
+| Re-check every past class (finds fake GPS in old sign-ins) | Works the flags out again for every day with a log tab, then rebuilds the registers. Run it once after updating, outside class time |
 | Update the attendance registers now | Rebuilds the register tab of every class (also rebuilt every 15 minutes by the timer) |
 | Open the Corrections tab | Where you set a student's status by hand (see below) |
 | Send Roster changes to phones now | Phones pick up Roster edits within 5 minutes anyway |
@@ -151,7 +165,7 @@ For students who could not sign in (dead phone, location blocked, no GPS indoors
 
 **One tab per class per day**
 
-Records go into a tab named after the date and the class, for example `2026-09-30 ECOM-SEP-26`. The tab is created the first time that class meets, with the full headers: columns A–R are the original layout, then S Session No, T GPS Accuracy (m), U Upload Delay (mins), V Clock Check, W Event ID, X Checked Out, Y Last Seen In Class, Z Early Leaver, AA Shared Device. Two sessions of the same class on one day share the tab.
+Records go into a tab named after the date and the class, for example `2026-09-30 ECOM-SEP-26`. The tab is created the first time that class meets, with the full headers: columns A–R are the original layout, then S Session No, T GPS Accuracy (m), U Upload Delay (mins), V Clock Check, W Event ID, X Checked Out, Y Last Seen In Class, Z Early Leaver, AA Shared Device, AB GPS Check. Two sessions of the same class on one day share the tab.
 
 Change `LOG_SHEET_PATTERN` in `Code.gs` to `'{date}'` for one tab per day with every class together.
 
@@ -249,6 +263,10 @@ Settings are in `CONFIG` at the top of `Code.gs` and at the top of the script in
 | `BUSY_RETRY_MS`, `LOCK_WAIT_MS` | Code.gs | 15 s, 10 s | How long an upload waits for the sheet, and how long the phone waits after a "busy" reply |
 | `DEFAULT_RULES` | both | 5, 7, 15 | Fined / late / absent thresholds when K–M are blank. Keep the two files in step |
 | `PHOTO_PUBLIC_LINK` | Code.gs | false | `true` makes photos viewable by anyone with the link |
+| `FAKE_GPS_ABSENT` | Code.gs | true | A sign-in found to use fake GPS counts as Absent. `false` keeps the app's status and only adds *· fake GPS (…)* |
+| `GPS_JUMP_MIN_M`, `GPS_JUMP_KMH` | both | 2000, 150 | A jump at least this far, at this speed or more, is fake GPS (index.html: `JUMP_MIN_M`, `JUMP_KMH`) |
+| `GPS_FROZEN_MIN`, `GPS_FROZEN_READINGS` | Code.gs | 30, 5 | A location frozen this long, over this many readings, gets *Check GPS* |
+| `KNOWN_PINS` | both | the old FAST point | Classroom points once published in a page; a phone reporting one exactly is fake GPS |
 | `LOG_SHEET`, `ROSTER_SHEET` | Code.gs | Sheet2, Roster | Tab names |
 
 ## Tests

@@ -259,7 +259,8 @@
   var K = {
     roster: 'att_roster_v2', oldRoster: 'app_master_roster', session: 'active_session',
     device: 'app_device_id', skew: 'att_clock_skew', lastUpload: 'att_last_upload', rosterChecked: 'att_roster_checked',
-    apiUrl: 'att_api_url', summary: 'att_day_summary', lastSection: 'att_last_section'
+    apiUrl: 'att_api_url', summary: 'att_day_summary', lastSection: 'att_last_section', fixes: 'att_recent_fixes',
+    fakeSent: 'att_fake_gps_sent'
   };
 
   /* ================= Small helpers ================= */
@@ -598,7 +599,70 @@
 
   function toFix(p) {
     // Receive time, not p.timestamp: some Android devices report position times that don't match the phone clock
-    return { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 9999), ts: Date.now() };
+    var f = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 9999), ts: Date.now(),
+              pts: isFinite(p.timestamp) ? Number(p.timestamp) : null };   // the reading's own time, kept for the fake-GPS check
+    rememberFix(f);
+    return f;
+  }
+
+  /* ================= Fake GPS =================
+   * A web page cannot see Android's Developer options or which app supplies the location (a
+   * "mock location app"), but a made-up location gives itself away:
+   *   - the phone "travels" further than any real journey in a few minutes (the fake slips, or is
+   *     switched on just before signing in), or
+   *   - it reports a classroom point to the centimetre: typed into the app, never measured.
+   * Such a sign-in or check-out is refused and reported to the teacher (a FAKE_GPS record). The
+   * server runs the same checks on every record afterwards (gpsCheck_ in Code.gs). */
+  var FIX_HISTORY_MS = 10 * 60000, JUMP_MIN_M = 2000, JUMP_KMH = 150;
+  var KNOWN_PINS = [[31.48104614, 74.30328505]];   // the FAST point published in the old attend02 page
+
+  function rememberFix(f) {
+    var h = (lsGet(K.fixes) || []).filter(function (x) { return x && f.ts - x.ts < FIX_HISTORY_MS && x.ts <= f.ts; });
+    h.push({ lat: f.lat, lng: f.lng, acc: f.acc, ts: f.ts, pts: f.pts });
+    lsSet(K.fixes, h.slice(-40));
+  }
+
+  /** Why this fix cannot be real, or '' */
+  function fakeGpsReason(fix, loc) {
+    var pins = KNOWN_PINS.concat(loc && isFinite(loc.lat) && isFinite(loc.lng) ? [[loc.lat, loc.lng]] : []);
+    for (var i = 0; i < pins.length; i++) {
+      if (Math.abs(round6(fix.lat) - round6(pins[i][0])) < 6e-7 && Math.abs(round6(fix.lng) - round6(pins[i][1])) < 6e-7) {
+        return 'your phone reported the exact classroom map point';
+      }
+    }
+    var worst = null;
+    (lsGet(K.fixes) || []).forEach(function (x) {
+      if (!x || x.ts > fix.ts || fix.ts - x.ts > FIX_HISTORY_MS) return;
+      if (x.ts === fix.ts && x.lat === fix.lat && x.lng === fix.lng) return;   // this reading itself
+      // the longer of the two gaps (when received, and the readings' own times), so an old reading
+      // handed back late from a cache is never mistaken for a jump
+      var gap = fix.ts - x.ts;
+      if (x.pts !== null && fix.pts !== null && isFinite(x.pts) && isFinite(fix.pts)) gap = Math.max(gap, Math.abs(fix.pts - x.pts));
+      var d = distanceTo(fix, x), secs = Math.max(gap / 1000, 30);
+      if (d >= JUMP_MIN_M && d / secs * 3.6 >= JUMP_KMH && d > 10 * ((x.acc || 0) + (fix.acc || 0)) && (!worst || d > worst.d)) {
+        worst = { d: d, min: Math.max(1, Math.round(secs / 60)) };
+      }
+    });
+    return worst ? 'your location jumped ' + (Math.round(worst.d / 100) / 10) + ' km in ' + worst.min + ' min' : '';
+  }
+
+  /** Records the attempt for the teacher. who: the session, or the details typed for a sign-in. */
+  function reportFakeGps(who, fix, loc, reason, ts) {
+    // once per student and reason every 10 minutes, however often the button is pressed
+    var key = norm(who.rollNo) + '|' + norm(who.name) + '|' + reason.replace(/[\d.]+/g, '#');
+    var sent = (lsGet(K.fakeSent) || {}), now = Date.now();
+    Object.keys(sent).forEach(function (k) { if (now - sent[k] > FIX_HISTORY_MS) delete sent[k]; });
+    if (sent[key]) return;
+    sent[key] = now; lsSet(K.fakeSent, sent);
+    var ev = makeEvent('FAKE_GPS', who, fix, loc ? distanceTo(fix, loc) : '', ts);
+    ev.note = reason.replace(/^your /, '');   // for the teacher: "location jumped 16.1 km in 1 min"
+    enqueue(ev);
+  }
+
+  function fakeGpsText(reason, what) {
+    return what + ' refused: ' + reason + ', which a real phone cannot do. A fake-location app is probably on ' +
+      '(Android: Settings → Developer options → Select mock location app). Turn it off and try again from class. ' +
+      'Your teacher can see this attempt.';
   }
 
   function distanceTo(fix, loc) {
@@ -803,6 +867,11 @@
       if (fix.acc > GPS_MAX_ACCURACY) {
         return say('GPS signal is too weak (±' + fix.acc + ' m). Move near a window or outside and try again.', 'bad');
       }
+      var fake = fakeGpsReason(fix, loc);
+      if (fake) {
+        reportFakeGps({ section: sec, rollNo: roll, name: name, deviceId: deviceId() }, fix, loc, fake, pressedAt);
+        return say(fakeGpsText(fake, 'Sign-in'), 'bad');
+      }
       var dist = distanceTo(fix, loc);
       if (!insideArea(fix, dist, loc)) {
         return say('You are ' + dist + ' m from class. You need to be within ' + loc.radius + ' m to sign in.', 'bad');
@@ -912,6 +981,11 @@
     getFix(20000, 45000).then(function (fix) {
       btn.disabled = false; signingIn = false;
       if (fix.acc > GPS_MAX_ACCURACY) return say('GPS signal is too weak (±' + fix.acc + ' m). Move near a window and try again.', 'bad');
+      var fake = fakeGpsReason(fix, loc);
+      if (fake) {
+        if (!s.fakeReported) { s.fakeReported = true; saveSession(s); reportFakeGps(s, fix, loc, fake, Date.now()); }
+        return say(fakeGpsText(fake, 'Check-out'), 'bad');
+      }
       var dist = distanceTo(fix, loc);
       if (!insideArea(fix, dist, loc)) {
         return say('You are ' + dist + ' m from class. Check-out only works inside the class area (' + loc.radius + ' m).', 'bad');
@@ -969,6 +1043,13 @@
       if (!loc) return;
       var now = Date.now(), dist = distanceTo(fix, loc), upload = false;
       s.lastFix = fix; s.lastDist = dist; s.lastPingTs = now;
+      // a fake location slipping (or switched on or off) during class: reported once, and the student is told
+      var fake = !s.fakeReported && fakeGpsReason(fix, loc);
+      if (fake) {
+        s.fakeReported = true;
+        reportFakeGps(s, fix, loc, fake, now);
+        say('Fake GPS detected: ' + fake + ', which a real phone cannot do. This has been reported to your teacher.', 'bad');
+      }
 
       if (insideArea(fix, dist, loc)) {
         if (s.outSince) { s.outSince = null; upload = true; }
